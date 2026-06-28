@@ -1,12 +1,12 @@
 # openstack-lab
 
-Kolla-Ansible OpenStack + Ceph HCI 배포 자동화 (lab/reference).
+Kolla-Ansible OpenStack + Ceph HCI deployment automation (lab/reference).
+Based on the deployment playbooks used in production VMware → OpenStack migration.
 
-VMware → OpenStack 마이그레이션 운영에 사용한 배포 플레이북 기반.
+## Structure
 
-## 구성
-- `00~14-*.yml` : SSH/base/docker/Ceph/Kolla 단계별 Ansible 플레이북
-- `terraform/`   : base/instance/octavia/vjailbreak provisioning
-- `config/`      : cinder/skyline/masakari 등 서비스 설정
-- `scripts/`     : ceph dashboard 등 보조 스크립트
-- `grafana-dashboards/` : 모니터링 대시보드
+- `00~14-*.yml` — Step-by-step Ansible playbooks (SSH / base / Docker / Ceph / Kolla)
+- `terraform/` — base / instance / Octavia / vJailbreak provisioning
+- `config/` — Service configs (Cinder, Skyline, Masakari, etc.)
+- `scripts/` — Helper scripts (Ceph dashboard, etc.)
+- `grafana-dashboards/` — Monitoring dashboards
