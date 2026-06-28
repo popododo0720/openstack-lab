@@ -1,0 +1,24 @@
+---
+# 전체 배포 통합 플레이북 (01~14 + kolla deploy + post-deploy)
+# 사용법: ansible-playbook -i inventory.ini deploy-all.yml
+# 이것 하나로 처음부터 끝까지 전부 실행됨
+
+# Phase 1: 기본 설정
+- import_playbook: 01-base-setup.yml
+- import_playbook: 02-docker-install.yml
+
+# Phase 2: Ceph 클러스터
+- import_playbook: 03-ceph-install.yml
+- import_playbook: 04-ceph-bootstrap.yml
+- import_playbook: 05-ceph-ssh-setup.yml
+- import_playbook: 06-ceph-add-hosts.yml
+- import_playbook: 07-ceph-add-osd.yml
+- import_playbook: 08-ceph-pools.yml
+- import_playbook: 09-ceph-auth.yml
+
+# Phase 3: Kolla 설치 및 설정
+- import_playbook: 10-kolla-install.yml
+- import_playbook: 11-kolla-config.yml
+- import_playbook: 12-kolla-ceph-config.yml
+- import_playbook: 13-kolla-deploy.yml
+- import_playbook: 14-after-deploy.yml

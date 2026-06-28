@@ -1,0 +1,1035 @@
+---
+# Kolla 설정 (globals.yml, multinode inventory)
+- name: "Kolla 설정"
+  hosts: stack1
+  become: yes
+
+  tasks:
+    - name: "원본 globals.yml 백업"
+      copy:
+        src: /etc/kolla/globals.yml
+        dest: /etc/kolla/globals.yml.backup
+        remote_src: yes
+
+    - name: "globals.yml 복사"
+      copy:
+        src: "{{ playbook_dir }}/globals.yml"
+        dest: /etc/kolla/globals.yml
+
+    - name: "네트워크 인터페이스 수정 - network_interface"
+      lineinfile:
+        path: /etc/kolla/globals.yml
+        regexp: '^network_interface:'
+        line: 'network_interface: "{{ network_interface }}"'
+
+    - name: "네트워크 인터페이스 수정 - kolla_external_vip_interface"
+      lineinfile:
+        path: /etc/kolla/globals.yml
+        regexp: '^kolla_external_vip_interface:'
+        line: 'kolla_external_vip_interface: "{{ kolla_external_vip_interface }}"'
+
+    - name: "네트워크 인터페이스 수정 - kolla_internal_vip_interface"
+      lineinfile:
+        path: /etc/kolla/globals.yml
+        regexp: '^kolla_internal_vip_interface:'
+        line: 'kolla_internal_vip_interface: "{{ kolla_internal_vip_interface }}"'
+
+    - name: "네트워크 인터페이스 수정 - tunnel_interface 활성화"
+      lineinfile:
+        path: /etc/kolla/globals.yml
+        regexp: '^#?tunnel_interface:'
+        line: 'tunnel_interface: "{{ tunnel_interface }}"'
+        insertafter: '^#swift_replication_interface:'
+      when:
+        - tunnel_interface is defined
+        - (tunnel_interface | string | trim | length) > 0
+
+    - name: "네트워크 인터페이스 수정 - tunnel_interface 비활성화"
+      replace:
+        path: /etc/kolla/globals.yml
+        regexp: '^tunnel_interface:.*$'
+        replace: '#tunnel_interface:'
+      when: tunnel_interface is not defined or (tunnel_interface | default('') | string | trim | length) == 0
+
+    - name: "네트워크 인터페이스 수정 - neutron_external_interface"
+      lineinfile:
+        path: /etc/kolla/globals.yml
+        regexp: '^neutron_external_interface:'
+        line: 'neutron_external_interface: "{{ neutron_external_interface }}"'
+
+    - name: "Neutron 브릿지 설정 - neutron_bridge_name"
+      lineinfile:
+        path: /etc/kolla/globals.yml
+        regexp: '^neutron_bridge_name:'
+        line: 'neutron_bridge_name: "{{ neutron_bridge_name }}"'
+
+    - name: "Neutron 물리 네트워크 - neutron_physical_networks"
+      lineinfile:
+        path: /etc/kolla/globals.yml
+        regexp: '^neutron_physical_networks:'
+        line: 'neutron_physical_networks: "{{ neutron_physical_networks }}"'
+
+    - name: "Neutron VLAN provider range - neutron_network_vlan_ranges"
+      lineinfile:
+        path: /etc/kolla/globals.yml
+        regexp: '^neutron_network_vlan_ranges:'
+        line: 'neutron_network_vlan_ranges: "{{ neutron_network_vlan_ranges }}"'
+        insertafter: '^neutron_physical_networks:'
+      when:
+        - neutron_network_vlan_ranges is defined
+        - (neutron_network_vlan_ranges | string | trim | length) > 0
+
+    - name: "Neutron 커스텀 설정 디렉토리 생성"
+      file:
+        path: /etc/kolla/config/neutron
+        state: directory
+        mode: "0755"
+      when:
+        - neutron_network_vlan_ranges is defined
+        - (neutron_network_vlan_ranges | string | trim | length) > 0
+
+    - name: "Neutron ML2 VLAN range override 배포"
+      copy:
+        dest: /etc/kolla/config/neutron/ml2_conf.ini
+        mode: "0644"
+        content: |
+          [ml2_type_vlan]
+          network_vlan_ranges = {{ neutron_network_vlan_ranges }}
+      when:
+        - neutron_network_vlan_ranges is defined
+        - (neutron_network_vlan_ranges | string | trim | length) > 0
+
+    - name: "VIP 수정 - kolla_internal_vip_address"
+      lineinfile:
+        path: /etc/kolla/globals.yml
+        regexp: '^kolla_internal_vip_address:'
+        line: 'kolla_internal_vip_address: "{{ kolla_internal_vip_address }}"'
+
+    - name: "VIP 수정 - kolla_external_vip_address"
+      lineinfile:
+        path: /etc/kolla/globals.yml
+        regexp: '^kolla_external_vip_address:'
+        line: 'kolla_external_vip_address: "{{ kolla_external_vip_address }}"'
+
+    - name: "Cinder HA 클러스터 이름 설정"
+      lineinfile:
+        path: /etc/kolla/globals.yml
+        regexp: '^cinder_cluster_name:'
+        line: 'cinder_cluster_name: "ceph"'
+        insertafter: '^enable_cinder:' 
+
+    - name: "Docker Registry 설정 - docker_registry"
+      lineinfile:
+        path: /etc/kolla/globals.yml
+        regexp: '^docker_registry:'
+        line: 'docker_registry: "{{ local_registry }}"'
+
+    - name: "Docker Registry insecure 설정"
+      lineinfile:
+        path: /etc/kolla/globals.yml
+        regexp: '^docker_registry_insecure:'
+        line: 'docker_registry_insecure: "yes"'
+
+    - name: "Docker namespace 설정"
+      lineinfile:
+        path: /etc/kolla/globals.yml
+        regexp: '^docker_namespace:'
+        line: 'docker_namespace: "fxhci"'
+
+    - name: "Prometheus Ceph mgr exporter endpoints 설정"
+      replace:
+        path: /etc/kolla/globals.yml
+        regexp: 'prometheus_ceph_mgr_exporter_endpoints:\n(?:  - .*\n)+'
+        replace: |-
+          prometheus_ceph_mgr_exporter_endpoints:
+          {% for host in groups['all'] %}
+            - "{{ hostvars[host]['storage_ip'] }}:9283"
+          {% endfor %}
+
+    - name: "multinode inventory 설정"
+      copy:
+        dest: /root/multinode
+        content: |
+          # FX-HCI 환경 multinode inventory
+          # Based on kolla-ansible original template
+
+          [control]
+          stack1 ansible_host={{ hostvars['stack1']['internal_ip'] }}
+          stack2 ansible_host={{ hostvars['stack2']['internal_ip'] }}
+          stack3 ansible_host={{ hostvars['stack3']['internal_ip'] }}
+
+          [network]
+          stack1 ansible_host={{ hostvars['stack1']['internal_ip'] }}
+          stack2 ansible_host={{ hostvars['stack2']['internal_ip'] }}
+          stack3 ansible_host={{ hostvars['stack3']['internal_ip'] }}
+
+          [compute]
+          stack1 ansible_host={{ hostvars['stack1']['internal_ip'] }}
+          stack2 ansible_host={{ hostvars['stack2']['internal_ip'] }}
+          stack3 ansible_host={{ hostvars['stack3']['internal_ip'] }}
+
+          [monitoring]
+          stack1 ansible_host={{ hostvars['stack1']['internal_ip'] }}
+          stack2 ansible_host={{ hostvars['stack2']['internal_ip'] }}
+          stack3 ansible_host={{ hostvars['stack3']['internal_ip'] }}
+
+          [storage]
+          stack1 ansible_host={{ hostvars['stack1']['internal_ip'] }}
+          stack2 ansible_host={{ hostvars['stack2']['internal_ip'] }}
+          stack3 ansible_host={{ hostvars['stack3']['internal_ip'] }}
+        
+          [deployment]
+          localhost ansible_connection=local
+
+          [baremetal:children]
+          control
+          network
+          compute
+          storage
+          monitoring
+
+          [baremetal:vars]
+          ansible_user=root
+          ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+
+          [tls-backend:children]
+          control
+          network
+
+          [common:children]
+          control
+          network
+          compute
+          storage
+          monitoring
+
+          [collectd:children]
+          compute
+
+          [grafana:children]
+          monitoring
+
+          [etcd:children]
+          control
+
+          [influxdb:children]
+          monitoring
+
+          [prometheus:children]
+          monitoring
+
+          [telegraf:children]
+          compute
+          control
+          monitoring
+          network
+          storage
+
+          [hacluster:children]
+          control
+
+          [hacluster-remote:children]
+          # all-in-one 3노드(control+compute 겸용)에서는 remote node를 두지 않음
+          # compute-only 노드가 생기기 전까지 비워둔다
+
+          [loadbalancer:children]
+          network
+
+          [mariadb:children]
+          control
+
+          [rabbitmq:children]
+          control
+
+          [keystone:children]
+          control
+
+          [glance:children]
+          control
+
+          [nova:children]
+          control
+
+          [neutron:children]
+          network
+
+          [openvswitch:children]
+          network
+          compute
+          manila-share
+
+          [cinder:children]
+          control
+
+          [cloudkitty:children]
+          control
+
+          [memcached:children]
+          control
+
+          [horizon:children]
+          control
+
+          [barbican:children]
+          control
+
+          [heat:children]
+          control
+
+          [ironic:children]
+          control
+
+          [magnum:children]
+          control
+
+          [mistral:children]
+          control
+
+          [manila:children]
+          control
+
+          [ceilometer:children]
+          control
+
+          [aodh:children]
+          control
+
+          [cyborg:children]
+          control
+          compute
+
+          [gnocchi:children]
+          control
+
+          [tacker:children]
+          control
+
+          [trove:children]
+          control
+
+          [watcher:children]
+          control
+
+          [octavia:children]
+          control
+
+          [designate:children]
+          control
+
+          [placement:children]
+          control
+
+          [bifrost:children]
+          deployment
+
+          [zun:children]
+          control
+
+          [skyline:children]
+          control
+
+          [redis:children]
+          control
+
+          [blazar:children]
+          control
+
+          [venus:children]
+          monitoring
+
+          [letsencrypt:children]
+          loadbalancer
+
+          # Common
+          [cron:children]
+          common
+
+          [fluentd:children]
+          common
+
+          [kolla-logs:children]
+          common
+
+          [kolla-toolbox:children]
+          common
+
+          [opensearch:children]
+          control
+
+          [opensearch-dashboards:children]
+          opensearch
+
+          # Glance
+          [glance-api:children]
+          glance
+
+          # Nova
+          [nova-api:children]
+          nova
+
+          [nova-conductor:children]
+          nova
+
+          [nova-metadata:children]
+          nova
+
+          [nova-super-conductor:children]
+          nova
+
+          [nova-novncproxy:children]
+          nova
+
+          [nova-scheduler:children]
+          nova
+
+          [nova-spicehtml5proxy:children]
+          nova
+
+          [nova-compute-ironic:children]
+          nova
+
+          [nova-serialproxy:children]
+          nova
+
+          # Neutron
+          [neutron-server:children]
+          control
+
+          [neutron-periodic-worker:children]
+          control
+
+          [neutron-rpc-server:children]
+          control
+
+          [neutron-dhcp-agent:children]
+          neutron
+
+          [neutron-l3-agent:children]
+          neutron
+
+          [neutron-metadata-agent:children]
+          neutron
+
+          [neutron-ovn-metadata-agent:children]
+          compute
+          network
+
+          [neutron-bgp-dragent:children]
+          neutron
+
+          [neutron-infoblox-ipam-agent:children]
+          neutron
+
+          [neutron-metering-agent:children]
+          neutron
+
+          [ironic-neutron-agent:children]
+          neutron
+
+          [neutron-ovn-agent:children]
+          compute
+          network
+
+          [neutron-ovn-maintenance-worker:children]
+          control
+
+          # Cinder
+          [cinder-api:children]
+          cinder
+
+          [cinder-backup:children]
+          storage
+
+          [cinder-scheduler:children]
+          cinder
+
+          [cinder-volume:children]
+          storage
+
+          # Cloudkitty
+          [cloudkitty-api:children]
+          cloudkitty
+
+          [cloudkitty-processor:children]
+          cloudkitty
+
+          # iSCSI
+          [iscsid:children]
+          compute
+          storage
+          ironic
+
+          [tgtd:children]
+          storage
+
+          # Manila
+          [manila-api:children]
+          manila
+
+          [manila-scheduler:children]
+          manila
+
+          [manila-share:children]
+          network
+
+          [manila-data:children]
+          manila
+
+          # Barbican
+          [barbican-api:children]
+          barbican
+
+          [barbican-keystone-listener:children]
+          barbican
+
+          [barbican-worker:children]
+          barbican
+
+          # Heat
+          [heat-api:children]
+          heat
+
+          [heat-api-cfn:children]
+          heat
+
+          [heat-engine:children]
+          heat
+
+          # Ironic
+          [ironic-api:children]
+          ironic
+
+          [ironic-conductor:children]
+          ironic
+
+          [ironic-inspector:children]
+          ironic
+
+          [ironic-tftp:children]
+          ironic
+
+          [ironic-http:children]
+          ironic
+
+          # Magnum
+          [magnum-api:children]
+          magnum
+
+          [magnum-conductor:children]
+          magnum
+
+          # Mistral
+          [mistral-api:children]
+          mistral
+
+          [mistral-executor:children]
+          mistral
+
+          [mistral-engine:children]
+          mistral
+
+          [mistral-event-engine:children]
+          mistral
+
+          # Ceilometer
+          [ceilometer-central:children]
+          ceilometer
+
+          [ceilometer-notification:children]
+          ceilometer
+
+          [ceilometer-compute:children]
+          compute
+
+          [ceilometer-ipmi:children]
+          compute
+
+          # Aodh
+          [aodh-api:children]
+          aodh
+
+          [aodh-evaluator:children]
+          aodh
+
+          [aodh-listener:children]
+          aodh
+
+          [aodh-notifier:children]
+          aodh
+
+          # Cyborg
+          [cyborg-api:children]
+          cyborg
+
+          [cyborg-agent:children]
+          compute
+
+          [cyborg-conductor:children]
+          cyborg
+
+          # Gnocchi
+          [gnocchi-api:children]
+          gnocchi
+
+          [gnocchi-statsd:children]
+          gnocchi
+
+          [gnocchi-metricd:children]
+          gnocchi
+
+          # Trove
+          [trove-api:children]
+          trove
+
+          [trove-conductor:children]
+          trove
+
+          [trove-taskmanager:children]
+          trove
+
+          # Multipathd
+          [multipathd:children]
+          compute
+          storage
+
+          # Watcher
+          [watcher-api:children]
+          watcher
+
+          [watcher-engine:children]
+          watcher
+
+          [watcher-applier:children]
+          watcher
+
+          # Octavia
+          [octavia-api:children]
+          octavia
+
+          [octavia-driver-agent:children]
+          octavia
+
+          [octavia-health-manager:children]
+          octavia
+
+          [octavia-housekeeping:children]
+          octavia
+
+          [octavia-worker:children]
+          octavia
+
+          # Designate
+          [designate-api:children]
+          designate
+
+          [designate-central:children]
+          designate
+
+          [designate-producer:children]
+          designate
+
+          [designate-mdns:children]
+          network
+
+          [designate-worker:children]
+          designate
+
+          [designate-sink:children]
+          designate
+
+          [designate-backend-bind9:children]
+          designate
+
+          # Placement
+          [placement-api:children]
+          placement
+
+          # Zun
+          [zun-api:children]
+          zun
+
+          [zun-wsproxy:children]
+          zun
+
+          [zun-compute:children]
+          compute
+
+          [zun-cni-daemon:children]
+          compute
+
+          # Skyline
+          [skyline-apiserver:children]
+          skyline
+
+          [skyline-console:children]
+          skyline
+
+          # Tacker
+          [tacker-server:children]
+          tacker
+
+          [tacker-conductor:children]
+          tacker
+
+          # Blazar
+          [blazar-api:children]
+          blazar
+
+          [blazar-manager:children]
+          blazar
+
+          # Prometheus
+          [prometheus-node-exporter:children]
+          monitoring
+          control
+          compute
+          network
+          storage
+
+          [prometheus-mysqld-exporter:children]
+          mariadb
+
+          [prometheus-memcached-exporter:children]
+          memcached
+
+          [prometheus-cadvisor:children]
+          monitoring
+          control
+          compute
+          network
+          storage
+
+          [prometheus-alertmanager:children]
+          monitoring
+
+          [prometheus-openstack-exporter:children]
+          monitoring
+
+          [prometheus-elasticsearch-exporter:children]
+          opensearch
+
+          [prometheus-blackbox-exporter:children]
+          monitoring
+
+          [prometheus-libvirt-exporter:children]
+          compute
+
+          [masakari-api:children]
+          control
+
+          [masakari-engine:children]
+          control
+
+          [masakari-hostmonitor:children]
+          control
+
+          [masakari-instancemonitor:children]
+          compute
+
+          [ovn-controller:children]
+          ovn-controller-compute
+          ovn-controller-network
+
+          [ovn-controller-compute:children]
+          compute
+
+          [ovn-controller-network:children]
+          network
+
+          [ovn-database:children]
+          control
+
+          [ovn-northd:children]
+          ovn-database
+
+          [ovn-nb-db:children]
+          ovn-database
+
+          [ovn-sb-db:children]
+          ovn-database
+
+          [ovn-sb-db-relay:children]
+          ovn-database
+
+          [venus-api:children]
+          venus
+
+          [venus-manager:children]
+          venus
+
+          [letsencrypt-webserver:children]
+          letsencrypt
+
+          [letsencrypt-lego:children]
+          letsencrypt
+
+    - name: "globals.yml 확인"
+      shell: grep -E "^(network_interface|kolla_external_vip|kolla_internal_vip|neutron_external)" /etc/kolla/globals.yml
+      register: globals_check
+
+    - name: "설정 확인"
+      debug:
+        msg: "{{ globals_check.stdout_lines }}"
+
+    - name: "multinode 확인"
+      command: cat /root/multinode
+      register: multinode_check
+
+    - name: "패스워드 생성 (kolla-genpwd)"
+      shell: source /root/kolla-venv/bin/activate && kolla-genpwd
+      args:
+        executable: /bin/bash
+        creates: /etc/kolla/.passwords_generated
+
+    - name: "패스워드 생성 완료 마커"
+      file:
+        path: /etc/kolla/.passwords_generated
+        state: touch
+
+    - name: "passwords.yml 읽기"
+      slurp:
+        src: /etc/kolla/passwords.yml
+      register: kolla_passwords_file
+
+    - name: "필수 Kolla 비밀번호 확인"
+      assert:
+        that:
+          - (kolla_passwords_file.content | b64decode | regex_search('(?m)^database_password:\\s*\\S+'))
+          - (kolla_passwords_file.content | b64decode | regex_search('(?m)^rabbitmq_password:\\s*\\S+'))
+        fail_msg: >-
+          /etc/kolla/passwords.yml 에 필수 비밀번호가 비어 있습니다.
+          기존 배포 환경이면 예전 passwords.yml 을 먼저 복구해야 합니다.
+
+    - name: "TLS 인증서 생성"
+      shell: source /root/kolla-venv/bin/activate && kolla-ansible certificates -i /root/multinode
+      args:
+        executable: /bin/bash
+
+    - name: "admin 비밀번호 고정 (CHANGEME_PASSWORD)"
+      lineinfile:
+        path: /etc/kolla/passwords.yml
+        regexp: '^keystone_admin_password:'
+        line: 'keystone_admin_password: CHANGEME_PASSWORD'
+
+
+    - name: "OpenStack Exporter 커스텀 설정 디렉토리 생성"
+      file:
+        path: /etc/kolla/config/prometheus-openstack-exporter
+        state: directory
+        mode: "0755"
+
+    - name: "OpenStack Exporter clouds.yml 템플릿 고정"
+      copy:
+        dest: /etc/kolla/config/prometheus-openstack-exporter/clouds.yml
+        mode: "0640"
+        content: |
+          clouds:
+            default:
+              region_name: RegionOne
+              identity_api_version: 3
+              identity_interface: internal
+              volume_api_version: 3
+              auth:
+                username: admin
+                password: {{ admin_password }}
+                project_name: admin
+                project_domain_name: 'Default'
+                user_domain_name: 'Default'
+                cacert: /etc/ssl/certs/ca-certificates.crt
+                auth_url: https://{{ kolla_internal_vip_address }}:5000
+
+    - name: "OpenStack Exporter 템플릿 소스 확인"
+      shell: grep -n 'password:' /etc/kolla/config/prometheus-openstack-exporter/clouds.yml
+      register: exporter_template_check
+      changed_when: false
+
+    - name: "OpenStack Exporter 템플릿 확인 출력"
+      debug:
+        msg: "{{ exporter_template_check.stdout_lines }}"
+
+- name: "Kolla 서비스별 커스텀 설정 배포"
+  hosts: stack1
+  become: yes
+
+  tasks:
+    - name: "Grafana 커스텀 대시보드 디렉토리 초기화"
+      file:
+        path: /etc/kolla/config/grafana/dashboards
+        state: absent
+
+    - name: "Grafana 커스텀 대시보드 디렉토리 생성"
+      file:
+        path: /etc/kolla/config/grafana/dashboards
+        state: directory
+        mode: "0755"
+
+    - name: "Grafana 커스텀 대시보드 복사"
+      copy:
+        src: "{{ playbook_dir }}/grafana-dashboards/"
+        dest: /etc/kolla/config/grafana/dashboards/
+        mode: "0644"
+
+    - name: "Grafana 커스텀 대시보드 배포 결과 확인"
+      find:
+        paths: /etc/kolla/config/grafana/dashboards
+        file_type: file
+        patterns: "*.json"
+      register: grafana_dashboard_files
+
+    - name: "Grafana 커스텀 대시보드 목록 출력"
+      debug:
+        msg: "{{ grafana_dashboard_files.files | map(attribute='path') | list }}"
+
+    - name: "Skyline nginx custom override 디렉토리 생성"
+      file:
+        path: /etc/kolla/config/skyline
+        state: directory
+        mode: "0755"
+
+    - name: "Skyline nginx custom override 배포"
+      copy:
+        src: "{{ playbook_dir }}/config/skyline/nginx.conf"
+        dest: /etc/kolla/config/skyline/nginx.conf
+        mode: "0644"
+
+    - name: "Skyline nginx custom override 배포 결과 확인"
+      stat:
+        path: /etc/kolla/config/skyline/nginx.conf
+      register: skyline_nginx_override
+
+    - name: "Skyline nginx custom override 경로 출력"
+      debug:
+        msg: "{{ skyline_nginx_override.stat.path }}"
+
+- name: "Skyline 81 static UI 번들 배포"
+  hosts: all
+  become: yes
+
+  tasks:
+    - name: "Skyline static override 디렉토리 생성"
+      file:
+        path: /etc/kolla/config/skyline-static-81
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: "Skyline static override 파일 복사"
+      copy:
+        src: "{{ playbook_dir }}/config/skyline-static-81/"
+        dest: /etc/kolla/config/skyline-static-81/
+        owner: root
+        group: root
+        mode: preserve
+
+- name: "VIP/FQDN 및 노드 hosts 매핑 배포"
+  hosts: all
+  become: yes
+
+  tasks:
+    - name: 루프백 hostname 엔트리 제거 (Kolla hostname unique resolution 보장)
+      lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.1\.1\s+{{ item }}$'
+        state: absent
+      loop: "{{ groups['all'] }}"
+
+    - name: 관리망 호스트명 hosts 엔트리
+      lineinfile:
+        path: /etc/hosts
+        regexp: '^{{ hostvars[item].ansible_host | regex_escape }}\s+{{ item }}-mgmt$'
+        line: "{{ hostvars[item].ansible_host }} {{ item }}-mgmt"
+        state: present
+      loop: "{{ groups['all'] }}"
+
+    - name: 내부망 호스트명 hosts 엔트리
+      lineinfile:
+        path: /etc/hosts
+        regexp: '^{{ hostvars[item].internal_ip | regex_escape }}\s+{{ item }}$'
+        line: "{{ hostvars[item].internal_ip }} {{ item }}"
+        state: present
+      loop: "{{ groups['all'] }}"
+
+    - name: 스토리지망 별칭 hosts 엔트리
+      lineinfile:
+        path: /etc/hosts
+        regexp: '^{{ hostvars[item].storage_ip | regex_escape }}\s+{{ item }}-storage$'
+        line: "{{ hostvars[item].storage_ip }} {{ item }}-storage"
+        state: present
+      loop: "{{ groups['all'] }}"
+
+    - name: 외부망 별칭 hosts 엔트리
+      lineinfile:
+        path: /etc/hosts
+        regexp: '^{{ hostvars[item].external_ip | regex_escape }}\s+{{ item }}-ext$'
+        line: "{{ hostvars[item].external_ip }} {{ item }}-ext"
+        state: present
+      loop: "{{ groups['all'] }}"
+
+    - name: 내부 VIP FQDN hosts 엔트리
+      lineinfile:
+        path: /etc/hosts
+        regexp: '^{{ kolla_internal_vip_address | regex_escape }}\s+{{ kolla_internal_fqdn | regex_escape }}$'
+        line: "{{ kolla_internal_vip_address }} {{ kolla_internal_fqdn }}"
+        state: present
+      when:
+        - kolla_internal_fqdn is defined
+        - (kolla_internal_fqdn | string | length) > 0
+
+    - name: 외부 VIP FQDN hosts 엔트리
+      lineinfile:
+        path: /etc/hosts
+        regexp: '^{{ kolla_external_vip_address | regex_escape }}\s+{{ kolla_external_fqdn | regex_escape }}$'
+        line: "{{ kolla_external_vip_address }} {{ kolla_external_fqdn }}"
+        state: present
+      when:
+        - kolla_external_fqdn is defined
+        - (kolla_external_fqdn | string | length) > 0
+
+- name: "배포노드 VIP/FQDN hosts 매핑"
+  hosts: localhost
+  connection: local
+  become: yes
+
+  tasks:
+    - name: 배포노드 내부 VIP FQDN hosts 엔트리
+      lineinfile:
+        path: /etc/hosts
+        regexp: '^{{ kolla_internal_vip_address | regex_escape }}\s+{{ kolla_internal_fqdn | regex_escape }}$'
+        line: "{{ kolla_internal_vip_address }} {{ kolla_internal_fqdn }}"
+        state: present
+      when:
+        - kolla_internal_fqdn is defined
+        - (kolla_internal_fqdn | string | length) > 0
+
+    - name: 배포노드 외부 VIP FQDN hosts 엔트리
+      lineinfile:
+        path: /etc/hosts
+        regexp: '^{{ kolla_external_vip_address | regex_escape }}\s+{{ kolla_external_fqdn | regex_escape }}$'
+        line: "{{ kolla_external_vip_address }} {{ kolla_external_fqdn }}"
+        state: present
+      when:
+        - kolla_external_fqdn is defined
+        - (kolla_external_fqdn | string | length) > 0
+
+- name: "Masakari custom config 배포 (restrict_to_remotes + sudoers)"
+  hosts: stack1
+  become: yes
+  tasks:
+    - name: "Masakari config 디렉토리 생성"
+      file:
+        path: /etc/kolla/config/masakari
+        state: directory
+        mode: "0755"
+
+    - name: "Masakari restrict_to_remotes override 배포 (#2)"
+      copy:
+        src: "{{ playbook_dir }}/config/masakari/masakari-monitors.conf"
+        dest: /etc/kolla/config/masakari/masakari-monitors.conf
+        mode: "0644"
+
+    - name: "Masakari sudoers (crmadmin/cibadmin) 배포 (#1)"
+      copy:
+        src: "{{ playbook_dir }}/config/masakari/kolla_masakari_monitors_sudoers"
+        dest: /etc/kolla/config/masakari/kolla_masakari_monitors_sudoers
+        mode: "0644"

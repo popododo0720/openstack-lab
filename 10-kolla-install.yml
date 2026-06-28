@@ -1,0 +1,233 @@
+---
+# Kolla Ansible 설치 (stack1 - controller 노드)
+- name: "Kolla Ansible 설치"
+  hosts: stack1
+  become: yes
+  vars:
+    venv_path: "/root/kolla-venv"
+    wheel_dir: "/root/python-wheels"
+    wheel_subdir: "kolla-2025.1"
+    repo_host: '{{ local_registry.split(":")[0] }}'
+    effective_repo_base_url: '{{ repo_base_url | default("https://" ~ repo_host) }}'
+    wheel_base_url: "{{ effective_repo_base_url }}/repository/python-wheels/{{ wheel_subdir }}"
+    wheel_index_url: "{{ wheel_base_url }}/index.html"
+    wheel_constraints: "constraints-2025.1.txt"
+
+  tasks:
+    - name: "빌드 의존성 패키지 설치"
+      apt:
+        name:
+          - git
+          - python3-dev
+          - python3-venv
+          - libffi-dev
+          - gcc
+          - libssl-dev
+          - libdbus-glib-1-dev
+        state: present
+        update_cache: yes
+
+    - name: "wheel 저장 디렉토리 생성"
+      file:
+        path: "{{ wheel_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: "기존 wheel 파일 정리"
+      shell: find {{ wheel_dir }} -maxdepth 1 -type f -delete
+      args:
+        executable: /bin/bash
+
+    - name: "kolla-2025.1 wheel index 조회"
+      uri:
+        url: "{{ wheel_index_url }}"
+        method: GET
+        user: admin
+        password: "CHANGEME_PASSWORD"
+        force_basic_auth: yes
+        validate_certs: no
+        return_content: yes
+      register: wheel_index
+
+    - name: "wheel 파일 목록 추출"
+      set_fact:
+        wheel_files: >-
+          {{
+            wheel_index.content
+            | regex_findall('href=\"([^\"]+)\"')
+            | reject('equalto', 'index.html')
+            | list
+          }}
+
+    - name: "kolla-2025.1 wheel 다운로드"
+      get_url:
+        url: "{{ wheel_base_url }}/{{ item }}"
+        dest: "{{ wheel_dir }}/{{ item }}"
+        url_username: admin
+        url_password: "CHANGEME_PASSWORD"
+        validate_certs: no
+        mode: '0644'
+      loop: "{{ wheel_files }}"
+
+    - name: "Python 가상환경 생성"
+      command: python3 -m venv {{ venv_path }}
+      args:
+        creates: "{{ venv_path }}/bin/activate"
+
+    - name: "kolla-ansible 소스 tarball 다운로드"
+      get_url:
+        url: "{{ effective_repo_base_url }}/repository/raw-hosted/kolla-ansible.tar.gz"
+        dest: /root/kolla-ansible.tar.gz
+        url_username: admin
+        url_password: "CHANGEME_PASSWORD"
+        validate_certs: no
+        mode: '0644'
+
+    - name: "기존 kolla-ansible 디렉토리 제거"
+      file:
+        path: /root/kolla-ansible
+        state: absent
+
+    - name: "kolla-ansible 디렉토리 생성"
+      file:
+        path: /root/kolla-ansible
+        state: directory
+        mode: '0755'
+
+    - name: "kolla-ansible 압축 해제"
+      unarchive:
+        src: /root/kolla-ansible.tar.gz
+        dest: /root/kolla-ansible/
+        remote_src: yes
+
+    - name: "Kolla Ansible 설치"
+      shell: |
+        source {{ venv_path }}/bin/activate
+        pip install --no-index --find-links {{ wheel_dir }} \
+          -c {{ wheel_dir }}/{{ wheel_constraints }} \
+          kolla-ansible \
+          python-openstackclient \
+          python-octaviaclient
+      args:
+        executable: /bin/bash
+
+    - name: "/etc/kolla 디렉토리 생성"
+      file:
+        path: /etc/kolla
+        state: directory
+        mode: '0755'
+
+    - name: "Kolla globals 기본 템플릿 복사"
+      copy:
+        src: /root/kolla-ansible/etc/kolla/globals.yml
+        dest: /etc/kolla/globals.yml
+        remote_src: yes
+        force: no
+
+    - name: "Kolla passwords 기본 템플릿 복사 (기존 운영 비밀번호 보존)"
+      copy:
+        src: /root/kolla-ansible/etc/kolla/passwords.yml
+        dest: /etc/kolla/passwords.yml
+        remote_src: yes
+        force: no
+
+    - name: "inventory 파일 복사"
+      copy:
+        src: /root/kolla-ansible/ansible/inventory/
+        dest: /root/
+        remote_src: yes
+
+    - name: "Galaxy 디렉토리 생성"
+      file:
+        path: /root/galaxy
+        state: directory
+        mode: '0755'
+
+    - name: "기존 Galaxy tarball 정리"
+      shell: find /root/galaxy -maxdepth 1 -type f -name '*.tar.gz' -delete
+      args:
+        executable: /bin/bash
+
+    - name: "Galaxy tarball 다운로드"
+      get_url:
+        url: "{{ effective_repo_base_url }}/repository/raw-hosted/galaxy/{{ item }}"
+        dest: "/root/galaxy/{{ item }}"
+        url_username: admin
+        url_password: "CHANGEME_PASSWORD"
+        validate_certs: no
+        mode: '0644'
+      loop:
+        - openstack-kolla-1.0.0.tar.gz
+        - ansible-netcommon-7.2.0.tar.gz
+        - ansible-posix-1.6.2.tar.gz
+        - ansible-utils-5.1.2.tar.gz
+        - community-crypto-2.26.7.tar.gz
+        - community-docker-4.8.7.tar.gz
+        - community-general-10.7.8.tar.gz
+        - community-library_inventory_filtering_v1-1.1.5.tar.gz
+        - containers-podman-1.19.2.tar.gz
+
+    - name: "Ansible Galaxy 의존성 설치"
+      shell: |
+        source {{ venv_path }}/bin/activate
+        ansible-galaxy collection install -p /root/.ansible/collections /root/galaxy/*.tar.gz --force
+      args:
+        executable: /bin/bash
+
+    - name: "활성화 스크립트 생성"
+      copy:
+        dest: /root/activate-kolla
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          source {{ venv_path }}/bin/activate
+          echo "Kolla Ansible 가상환경 활성화됨"
+
+    - name: "설치 확인"
+      shell: |
+        source {{ venv_path }}/bin/activate
+        kolla-ansible --version
+      args:
+        executable: /bin/bash
+      register: kolla_version_check
+
+    - name: "버전 출력"
+      debug:
+        msg: "{{ kolla_version_check.stdout_lines }}"
+
+    - name: "완료 메시지"
+      debug:
+        msg:
+          - "Kolla Ansible 설치 완료!"
+          - "활성화: source /root/activate-kolla"
+          - "설정파일: /etc/kolla/"
+          - "다음: 11-kolla-config.yml 실행"
+
+    - name: "Masakari hostmonitor 버그픽스 패치 (LP#2101026 - privileged + pacemaker volume)"
+      shell: |
+        source {{ venv_path }}/bin/activate
+        DEFAULTS="{{ venv_path }}/share/kolla-ansible/ansible/roles/masakari/defaults/main.yml"
+        HANDLERS="{{ venv_path }}/share/kolla-ansible/ansible/roles/masakari/handlers/main.yml"
+        # defaults: hostmonitor에 privileged: True 추가
+        sed -i '/^  masakari-hostmonitor:/,/dimensions:/{/dimensions:/i\    privileged: True
+        }' "$DEFAULTS"
+        # handlers: hostmonitor restart에 privileged 라인 추가
+        sed -i '/Restart masakari-hostmonitor/,/dimensions/{/ipc_mode/a\    privileged: "{{ service.privileged | default(True) }}"
+        }' "$HANDLERS"
+      args:
+        executable: /bin/bash
+
+    - name: "Masakari role 패치 스크립트 복사 (sudoers 주입)"
+      copy:
+        src: "{{ playbook_dir }}/scripts/patch-masakari-role.py"
+        dest: /root/patch-masakari-role.py
+        mode: "0755"
+
+    - name: "Masakari hostmonitor sudoers 패치 적용 (crmadmin/cibadmin via config.json+config.yml)"
+      command: python3 /root/patch-masakari-role.py "{{ venv_path }}/share/kolla-ansible/ansible/roles/masakari"
+      register: masakari_sudoers_patch
+      changed_when: "'PATCHED' in masakari_sudoers_patch.stdout"
+
+    - name: "Masakari sudoers 패치 결과"
+      debug:
+        var: masakari_sudoers_patch.stdout_lines

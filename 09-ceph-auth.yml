@@ -1,0 +1,87 @@
+---
+# OpenStack용 Ceph 인증 키링 생성 및 배포
+# Nova는 Cinder 키링 공유 (Kolla 기본값)
+- name: "Ceph 인증 키 생성 (stack1)"
+  hosts: stack1
+  become: yes
+  vars:
+    ceph_clients:
+      - name: "client.glance"
+        caps: "mon 'profile rbd' osd 'profile rbd pool=images' mgr 'profile rbd pool=images'"
+      - name: "client.cinder"
+        caps: "mon 'profile rbd' osd 'profile rbd pool=volumes, profile rbd pool=vms, profile rbd-read-only pool=images' mgr 'profile rbd pool=volumes, profile rbd pool=vms'"
+      - name: "client.cinder-backup"
+        caps: "mon 'profile rbd' osd 'profile rbd pool=backups' mgr 'profile rbd pool=backups'"
+      - name: "client.manila"
+        caps: "mon 'allow r' mgr 'allow rw'"
+
+    target_hosts:
+      - stack2
+      - stack3
+
+  tasks:
+    - name: "클라이언트 키 생성"
+      command: cephadm shell -- ceph auth get-or-create {{ item.name }} {{ item.caps }}
+      loop: "{{ ceph_clients }}"
+      register: auth_create
+
+    - name: "키링 파일 생성 - glance"
+      shell: cephadm shell -- ceph auth get client.glance > /etc/ceph/ceph.client.glance.keyring
+
+    - name: "키링 파일 생성 - cinder"
+      shell: cephadm shell -- ceph auth get client.cinder > /etc/ceph/ceph.client.cinder.keyring
+
+    - name: "키링 파일 생성 - cinder-backup"
+      shell: cephadm shell -- ceph auth get client.cinder-backup > /etc/ceph/ceph.client.cinder-backup.keyring
+
+    - name: "키링 파일 생성 - manila"
+      shell: cephadm shell -- ceph auth get client.manila > /etc/ceph/ceph.client.manila.keyring
+
+    - name: "키링 파일 권한 설정"
+      file:
+        path: "/etc/ceph/{{ item }}"
+        mode: '0600'
+      loop:
+        - ceph.client.glance.keyring
+        - ceph.client.cinder.keyring
+        - ceph.client.cinder-backup.keyring
+        - ceph.client.manila.keyring
+
+    - name: "키링 파일 확인"
+      command: ls -la /etc/ceph/
+      register: keyring_list
+
+    - name: "키링 목록 출력"
+      debug:
+        msg: "{{ keyring_list.stdout_lines }}"
+
+    - name: "ceph.conf 들여쓰기 제거 (kolla oslo_config 호환성)"
+      shell: sed -i 's/^[[:space:]]*//' /etc/ceph/ceph.conf
+
+    - name: "stack2, stack3에 /etc/ceph 디렉토리 생성"
+      command: ssh -o StrictHostKeyChecking=no root@{{ hostvars[item]['storage_ip'] }} "mkdir -p /etc/ceph"
+      loop: "{{ target_hosts }}"
+
+    - name: "ceph.conf 배포"
+      command: scp -o StrictHostKeyChecking=no /etc/ceph/ceph.conf root@{{ hostvars[item]['storage_ip'] }}:/etc/ceph/
+      loop: "{{ target_hosts }}"
+
+    - name: "키링 파일 배포"
+      shell: scp -o StrictHostKeyChecking=no /etc/ceph/ceph.client.*.keyring root@{{ hostvars[item]['storage_ip'] }}:/etc/ceph/
+      loop: "{{ target_hosts }}"
+
+    - name: "배포 확인 - stack2"
+      command: ssh root@{{ hostvars['stack2']['storage_ip'] }} "ls -la /etc/ceph/"
+      register: stack2_check
+
+    - name: "stack2 결과"
+      debug:
+        msg: "{{ stack2_check.stdout_lines }}"
+
+    - name: "배포 확인 - stack3"
+      command: ssh root@{{ hostvars['stack3']['storage_ip'] }} "ls -la /etc/ceph/"
+      register: stack3_check
+
+    - name: "stack3 결과"
+      debug:
+        msg: "{{ stack3_check.stdout_lines }}"

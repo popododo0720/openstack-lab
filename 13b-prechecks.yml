@@ -1,0 +1,22 @@
+---
+- name: "Kolla 사전 점검 (prechecks)"
+  hosts: stack1
+  become: yes
+  any_errors_fatal: true
+  vars:
+    venv_path: "/root/kolla-venv"
+    multinode_path: "/root/multinode"
+
+  tasks:
+    - name: "kolla-ansible prechecks 실행"
+      shell: |
+        set -euo pipefail
+        source {{ venv_path }}/bin/activate
+        kolla-ansible prechecks -i {{ multinode_path }}  2>&1 | tee /root/kolla-precheck.log
+      args:
+        executable: /bin/bash
+      register: prechecks_result
+
+    - name: "prechecks 결과"
+      debug:
+        msg: "{{ prechecks_result.stdout_lines[-15:] }}"

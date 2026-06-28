@@ -1,0 +1,198 @@
+---
+# 14-after-deploy.yml
+# kolla-ansible deploy/post-deploy 이후 수동 설정
+# 사용법: ansible-playbook -i inventory.ini 14-after-deploy.yml
+
+- name: "Post-deploy: 클러스터 메트릭 기반 quota 설정"
+  hosts: stack1
+  become: yes
+
+  vars:
+    quota_target_project: "admin"
+    quota_compute_ratio: 0.80
+    quota_storage_ratio: 0.80
+
+    quota_instance_reference_vcpus: 4
+    quota_instance_reference_ram_mb: 8192
+    quota_volume_reference_size_gb: 100
+    quota_backup_reference_size_gb: 100
+
+    quota_min_cores: 8
+    quota_min_ram_mb: 16384
+    quota_min_instances: 4
+    quota_min_gigabytes: 100
+    quota_min_backup_gigabytes: 100
+    quota_min_volumes: 8
+    quota_min_backups: 4
+    quota_min_per_volume_gigabytes: 100
+    quota_max_per_volume_gigabytes: 500
+
+    quota_cinder_pool_name: "volumes"
+    quota_backup_pool_name: "backups"
+
+    quota_key_pairs: -1
+    quota_server_groups: -1
+    quota_server_group_members: -1
+
+    quota_networks: -1
+    quota_subnets: -1
+    quota_ports: -1
+    quota_routers: -1
+    quota_floating_ips: -1
+    quota_secgroups: -1
+    quota_secgroup_rules: -1
+
+  tasks:
+    - name: "Nova 하이퍼바이저 통계 수집"
+      shell: |
+        set -euo pipefail
+        source /root/kolla-venv/bin/activate
+        source /etc/kolla/admin-openrc.sh
+        openstack hypervisor stats show -f json | awk 'BEGIN{capture=0} /^\{/ {capture=1} capture {print}'
+      args:
+        executable: /bin/bash
+      register: hypervisor_stats_raw
+      changed_when: false
+
+    - name: "Ceph 용량 통계 수집"
+      command: ceph df -f json
+      register: ceph_df_raw
+      changed_when: false
+
+    - name: "통계 파싱"
+      set_fact:
+        hypervisor_stats: "{{ hypervisor_stats_raw.stdout | from_json }}"
+        ceph_df: "{{ ceph_df_raw.stdout | from_json }}"
+
+    - name: "필수 Ceph pool 존재 확인"
+      assert:
+        that:
+          - (ceph_df.pools | selectattr('name', 'equalto', quota_cinder_pool_name) | list | length) > 0
+          - (ceph_df.pools | selectattr('name', 'equalto', quota_backup_pool_name) | list | length) > 0
+        fail_msg: "Ceph pool 정보에서 volumes/backups pool을 찾지 못했습니다."
+
+    - name: "pool 통계 추출"
+      set_fact:
+        cinder_pool_stats: "{{ (ceph_df.pools | selectattr('name', 'equalto', quota_cinder_pool_name) | list | first).stats }}"
+        backup_pool_stats: "{{ (ceph_df.pools | selectattr('name', 'equalto', quota_backup_pool_name) | list | first).stats }}"
+
+    - name: "원천 메트릭 정리"
+      set_fact:
+        cluster_vcpus: "{{ hypervisor_stats.vcpus | int }}"
+        cluster_memory_mb: "{{ hypervisor_stats.memory_mb | int }}"
+        cinder_pool_max_avail_gb: "{{ ((cinder_pool_stats.max_avail | int) / 1073741824) | round(0, 'floor') | int }}"
+        backup_pool_max_avail_gb: "{{ ((backup_pool_stats.max_avail | int) / 1073741824) | round(0, 'floor') | int }}"
+
+    - name: "Nova quota 계산"
+      set_fact:
+        quota_cores: "{{ [quota_min_cores, ((cluster_vcpus | int) * quota_compute_ratio) | round(0, 'floor') | int] | max }}"
+        quota_ram_mb: "{{ [quota_min_ram_mb, ((cluster_memory_mb | int) * quota_compute_ratio) | round(0, 'floor') | int] | max }}"
+
+    - name: "instance quota 계산"
+      set_fact:
+        quota_instances: >-
+          {{
+            [
+              quota_min_instances,
+              [
+                (quota_cores | int // quota_instance_reference_vcpus),
+                (quota_ram_mb | int // quota_instance_reference_ram_mb)
+              ] | min
+            ] | max
+          }}
+
+    - name: "Cinder quota 계산"
+      set_fact:
+        quota_gigabytes: "{{ [quota_min_gigabytes, ((cinder_pool_max_avail_gb | int) * quota_storage_ratio) | round(0, 'floor') | int] | max }}"
+        quota_backup_gigabytes: "{{ [quota_min_backup_gigabytes, ((backup_pool_max_avail_gb | int) * quota_storage_ratio) | round(0, 'floor') | int] | max }}"
+
+    - name: "파생 quota 계산"
+      set_fact:
+        quota_volumes: "{{ [quota_min_volumes, (quota_gigabytes | int // quota_volume_reference_size_gb)] | max }}"
+        quota_snapshots: "{{ [quota_min_volumes, (quota_gigabytes | int // quota_volume_reference_size_gb)] | max }}"
+        quota_backups: "{{ [quota_min_backups, (quota_backup_gigabytes | int // quota_backup_reference_size_gb)] | max }}"
+        quota_per_volume_gigabytes: "{{ [quota_min_per_volume_gigabytes, [quota_max_per_volume_gigabytes, quota_gigabytes | int] | min] | max }}"
+
+    - name: "계산된 quota 요약"
+      debug:
+        msg:
+          - "cluster_vcpus={{ cluster_vcpus }}"
+          - "cluster_memory_mb={{ cluster_memory_mb }}"
+          - "cinder_pool_max_avail_gb={{ cinder_pool_max_avail_gb }}"
+          - "backup_pool_max_avail_gb={{ backup_pool_max_avail_gb }}"
+          - "quota_instances={{ quota_instances }}"
+          - "quota_cores={{ quota_cores }}"
+          - "quota_ram_mb={{ quota_ram_mb }}"
+          - "quota_gigabytes={{ quota_gigabytes }}"
+          - "quota_per_volume_gigabytes={{ quota_per_volume_gigabytes }}"
+          - "quota_volumes={{ quota_volumes }}"
+          - "quota_snapshots={{ quota_snapshots }}"
+          - "quota_backups={{ quota_backups }}"
+          - "quota_backup_gigabytes={{ quota_backup_gigabytes }}"
+
+    - name: "Nova quota 적용"
+      shell: |
+        set -euo pipefail
+        source /root/kolla-venv/bin/activate
+        source /etc/kolla/admin-openrc.sh
+        openstack quota set \
+          --instances {{ quota_instances }} \
+          --cores {{ quota_cores }} \
+          --ram {{ quota_ram_mb }} \
+          --key-pairs {{ quota_key_pairs }} \
+          --server-groups {{ quota_server_groups }} \
+          --server-group-members {{ quota_server_group_members }} \
+          {{ quota_target_project }}
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: "Cinder quota 적용"
+      shell: |
+        set -euo pipefail
+        source /root/kolla-venv/bin/activate
+        source /etc/kolla/admin-openrc.sh
+        openstack quota set \
+          --volumes {{ quota_volumes }} \
+          --snapshots {{ quota_snapshots }} \
+          --gigabytes {{ quota_gigabytes }} \
+          --backups {{ quota_backups }} \
+          --backup-gigabytes {{ quota_backup_gigabytes }} \
+          --per-volume-gigabytes {{ quota_per_volume_gigabytes }} \
+          {{ quota_target_project }}
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: "Neutron quota 적용"
+      shell: |
+        set -euo pipefail
+        source /root/kolla-venv/bin/activate
+        source /etc/kolla/admin-openrc.sh
+        openstack quota set \
+          --floating-ips {{ quota_floating_ips }} \
+          --secgroup-rules {{ quota_secgroup_rules }} \
+          --secgroups {{ quota_secgroups }} \
+          --networks {{ quota_networks }} \
+          --subnets {{ quota_subnets }} \
+          --ports {{ quota_ports }} \
+          --routers {{ quota_routers }} \
+          {{ quota_target_project }}
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: "Quota 확인"
+      shell: |
+        set -euo pipefail
+        source /root/kolla-venv/bin/activate
+        source /etc/kolla/admin-openrc.sh
+        openstack quota show {{ quota_target_project }} -f yaml
+      args:
+        executable: /bin/bash
+      register: quota_check
+      changed_when: false
+
+    - name: "Quota 결과"
+      debug:
+        msg: "{{ quota_check.stdout_lines }}"

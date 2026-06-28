@@ -1,0 +1,81 @@
+---
+# stack1 → stack1,2,3 SSH 설정 (storage + internal 대역)
+- name: "stack1 SSH 키 생성"
+  hosts: stack1
+  become: yes
+  tasks:
+    - name: "SSH 키 생성"
+      shell: ssh-keygen -t rsa -b 2048 -N "" -f /root/.ssh/id_rsa
+      args:
+        creates: /root/.ssh/id_rsa
+
+    - name: "공개키 읽기"
+      command: cat /root/.ssh/id_rsa.pub
+      register: stack1_pubkey
+      changed_when: false
+
+    - name: "공개키 저장"
+      set_fact:
+        stack1_ssh_pubkey: "{{ stack1_pubkey.stdout }}"
+
+- name: "stack1, stack2, stack3에 공개키 배포"
+  hosts: stack1,stack2,stack3
+  become: yes
+  tasks:
+    - name: ".ssh 디렉토리 생성"
+      file:
+        path: /root/.ssh
+        state: directory
+        mode: '0700'
+
+    - name: "stack1 공개키 등록"
+      lineinfile:
+        path: /root/.ssh/authorized_keys
+        line: "{{ hostvars['stack1']['stack1_ssh_pubkey'] }}"
+        create: yes
+        mode: '0600'
+
+- name: "stack1에서 storage 대역 SSH 설정"
+  hosts: stack1
+  become: yes
+  vars:
+    target_hosts:
+      - stack2
+      - stack3
+  tasks:
+    - name: "known_hosts 등록 (storage 대역)"
+      shell: ssh-keyscan {{ hostvars[item]['storage_ip'] }} >> /root/.ssh/known_hosts 2>/dev/null
+      loop: "{{ target_hosts }}"
+
+    - name: "SSH 테스트 (storage 대역)"
+      command: ssh -o BatchMode=yes root@{{ hostvars[item]['storage_ip'] }} hostname
+      loop: "{{ target_hosts }}"
+      register: ssh_test_storage
+
+    - name: "storage 대역 결과"
+      debug:
+        msg: "{{ hostvars[item.item]['storage_ip'] }} → {{ item.stdout }}"
+      loop: "{{ ssh_test_storage.results }}"
+
+- name: "stack1에서 internal 대역 SSH 설정"
+  hosts: stack1
+  become: yes
+  vars:
+    all_hosts:
+      - stack1
+      - stack2
+      - stack3
+  tasks:
+    - name: "known_hosts 등록 (internal 대역)"
+      shell: ssh-keyscan {{ hostvars[item]['internal_ip'] }} >> /root/.ssh/known_hosts 2>/dev/null
+      loop: "{{ all_hosts }}"
+
+    - name: "SSH 테스트 (internal 대역)"
+      command: ssh -o BatchMode=yes root@{{ hostvars[item]['internal_ip'] }} hostname
+      loop: "{{ all_hosts }}"
+      register: ssh_test_internal
+
+    - name: "internal 대역 결과"
+      debug:
+        msg: "{{ hostvars[item.item]['internal_ip'] }} → {{ item.stdout }}"
+      loop: "{{ ssh_test_internal.results }}"

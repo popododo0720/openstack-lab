@@ -1,0 +1,157 @@
+---
+# OpenStack용 Ceph 풀 생성 + mgr/MDS HA 배포
+# 06-ceph-add-hosts 이후 실행 (stack2/stack3가 클러스터에 있어야 함)
+- name: "Ceph 풀 생성 및 서비스 배포"
+  hosts: stack1
+  become: yes
+  vars:
+    cephfs_filesystem_name: "mycephfs"
+    cephfs_data_pool_name: "{{ cephfs_filesystem_name }}_data"
+    cephfs_metadata_pool_name: "{{ cephfs_filesystem_name }}_metadata"
+    ceph_pools:
+      - name: "images"
+        pg_num: 8
+        application: "rbd"
+      - name: "vms"
+        pg_num: 8
+        application: "rbd"
+      - name: "volumes"
+        pg_num: 8
+        application: "rbd"
+      - name: "backups"
+        pg_num: 8
+        application: "rbd"
+      - name: "{{ cephfs_data_pool_name }}"
+        pg_num: 8
+        application: "cephfs"
+      - name: "{{ cephfs_metadata_pool_name }}"
+        pg_num: 8
+        application: "cephfs"
+
+  tasks:
+    - name: "PG autoscaler 활성화"
+      command: cephadm shell -- ceph config set global osd_pool_default_pg_autoscale_mode on
+
+    - name: "mgr 3개 배포 (모든 노드)"
+      command: cephadm shell -- ceph orch apply mgr --placement="stack1,stack2,stack3"
+
+    - name: "mgr 배포 대기 (30초)"
+      pause:
+        seconds: 30
+
+    - name: "mgr 상태 확인"
+      command: cephadm shell -- ceph orch ls --service-type mgr
+      register: mgr_status
+
+    - name: "mgr 상태 출력"
+      debug:
+        msg: "{{ mgr_status.stdout_lines }}"
+
+    - name: "풀 생성 (pg_num=8, autoscaler가 자동 조정)"
+      command: cephadm shell -- ceph osd pool create {{ item.name }} {{ item.pg_num }}
+      loop: "{{ ceph_pools }}"
+      failed_when: false
+
+    - name: "풀 application 설정"
+      command: cephadm shell -- ceph osd pool application enable {{ item.name }} {{ item.application }}
+      loop: "{{ ceph_pools }}"
+      failed_when: false
+
+    - name: "CephFS 존재 확인"
+      command:
+        argv:
+          - cephadm
+          - shell
+          - --
+          - ceph
+          - fs
+          - get
+          - "{{ cephfs_filesystem_name }}"
+      register: cephfs_check
+      failed_when: false
+      changed_when: false
+
+    - name: "CephFS 생성"
+      command:
+        argv:
+          - cephadm
+          - shell
+          - --
+          - ceph
+          - fs
+          - new
+          - "{{ cephfs_filesystem_name }}"
+          - "{{ cephfs_metadata_pool_name }}"
+          - "{{ cephfs_data_pool_name }}"
+      when: cephfs_check.rc != 0
+
+    - name: "CephFS snapshot 지원 활성화"
+      command:
+        argv:
+          - cephadm
+          - shell
+          - --
+          - ceph
+          - fs
+          - set
+          - "{{ cephfs_filesystem_name }}"
+          - allow_new_snaps
+          - 'true'
+      failed_when: false
+
+    - name: "MDS 3개 배포 (모든 노드)"
+      command:
+        argv:
+          - cephadm
+          - shell
+          - --
+          - ceph
+          - orch
+          - apply
+          - mds
+          - "{{ cephfs_filesystem_name }}"
+          - stack1,stack2,stack3
+
+    - name: "MDS 배포 대기 (30초)"
+      pause:
+        seconds: 30
+
+    - name: "CephFS 목록 확인"
+      command: cephadm shell -- ceph fs ls
+      register: cephfs_output
+
+    - name: "CephFS 목록 출력"
+      debug:
+        msg: "{{ cephfs_output.stdout_lines }}"
+
+    - name: "MDS 상태 확인"
+      command: cephadm shell -- ceph orch ls --service-type mds
+      register: mds_status
+
+    - name: "MDS 상태 출력"
+      debug:
+        msg: "{{ mds_status.stdout_lines }}"
+
+    - name: "풀 목록 확인"
+      command: cephadm shell -- ceph osd lspools
+      register: pools_output
+
+    - name: "풀 목록 출력"
+      debug:
+        msg: "{{ pools_output.stdout_lines }}"
+
+    - name: "PG autoscaler 상태 확인"
+      command: cephadm shell -- ceph osd pool autoscale-status
+      register: autoscale_status
+
+    - name: "autoscaler 상태 출력"
+      debug:
+        msg: "{{ autoscale_status.stdout_lines }}"
+
+    - name: "Ceph 상태"
+      command: ceph -s
+      register: ceph_status
+
+    - name: "상태 출력"
+      debug:
+        msg: "{{ ceph_status.stdout_lines }}"

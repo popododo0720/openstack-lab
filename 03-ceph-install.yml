@@ -1,0 +1,40 @@
+---
+- name: "Ceph 설치 (cephadm + Podman)"
+  hosts: all
+  become: yes
+
+  tasks:
+    - name: "cephadm + Podman 설치"
+      apt:
+        name:
+          - podman
+          - cephadm
+        state: present
+        update_cache: yes
+
+    - name: "Podman registry 설정 디렉토리 생성"
+      file:
+        path: /etc/containers/registries.conf.d
+        state: directory
+        mode: '0755'
+
+    - name: "Podman insecure registry 설정"
+      copy:
+        dest: /etc/containers/registries.conf.d/10-hci-registry.conf
+        mode: '0644'
+        content: |
+          [[registry]]
+          location = "{{ local_registry }}"
+          insecure = true
+
+    - name: "cephadm 설치 확인"
+      command: which cephadm
+      changed_when: false
+
+    - name: "ceph CLI wrapper 설정"
+      copy:
+        content: |
+          #!/bin/bash
+          exec cephadm shell -- ceph "$@"
+        dest: /usr/local/bin/ceph
+        mode: '0755'

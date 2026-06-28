@@ -1,0 +1,153 @@
+---
+# Kolla config에 Ceph 키링 배포
+# Nova는 Cinder 키링 공유 (Kolla 기본값: ceph_nova_user = ceph_cinder_user)
+- name: "Kolla Ceph 설정 배포"
+  hosts: stack1
+  become: yes
+  vars:
+    kolla_config_base: "/etc/kolla/config"
+
+  tasks:
+    - name: "ceph.conf 들여쓰기 제거 (oslo_config 호환성)"
+      shell: sed -i 's/^[[:space:]]*//' /etc/ceph/ceph.conf
+
+    - name: "Kolla config 디렉토리 생성"
+      file:
+        path: "{{ kolla_config_base }}"
+        state: directory
+        mode: '0755'
+
+    - name: "glance 디렉토리 생성"
+      file:
+        path: "{{ kolla_config_base }}/glance"
+        state: directory
+        mode: '0755'
+
+    - name: "glance - ceph.conf 복사"
+      copy:
+        src: /etc/ceph/ceph.conf
+        dest: "{{ kolla_config_base }}/glance/ceph.conf"
+        remote_src: yes
+
+    - name: "glance - keyring 복사"
+      copy:
+        src: /etc/ceph/ceph.client.glance.keyring
+        dest: "{{ kolla_config_base }}/glance/ceph.client.glance.keyring"
+        mode: '0600'
+        remote_src: yes
+
+    - name: "cinder 디렉토리 생성"
+      file:
+        path: "{{ kolla_config_base }}/cinder"
+        state: directory
+        mode: '0755'
+
+    - name: "cinder-volume 디렉토리 생성"
+      file:
+        path: "{{ kolla_config_base }}/cinder/cinder-volume"
+        state: directory
+        mode: '0755'
+
+    - name: "cinder-backup 디렉토리 생성"
+      file:
+        path: "{{ kolla_config_base }}/cinder/cinder-backup"
+        state: directory
+        mode: '0755'
+
+    - name: "cinder-volume - ceph.conf 복사"
+      copy:
+        src: /etc/ceph/ceph.conf
+        dest: "{{ kolla_config_base }}/cinder/cinder-volume/ceph.conf"
+        remote_src: yes
+
+    - name: "cinder-volume - keyring 복사"
+      copy:
+        src: /etc/ceph/ceph.client.cinder.keyring
+        dest: "{{ kolla_config_base }}/cinder/cinder-volume/ceph.client.cinder.keyring"
+        mode: '0600'
+        remote_src: yes
+
+    - name: "cinder-backup - ceph.conf 복사"
+      copy:
+        src: /etc/ceph/ceph.conf
+        dest: "{{ kolla_config_base }}/cinder/cinder-backup/ceph.conf"
+        remote_src: yes
+
+    - name: "cinder-backup - cinder keyring 복사"
+      copy:
+        src: /etc/ceph/ceph.client.cinder.keyring
+        dest: "{{ kolla_config_base }}/cinder/cinder-backup/ceph.client.cinder.keyring"
+        mode: '0600'
+        remote_src: yes
+
+    - name: "cinder-backup - backup keyring 복사"
+      copy:
+        src: /etc/ceph/ceph.client.cinder-backup.keyring
+        dest: "{{ kolla_config_base }}/cinder/cinder-backup/ceph.client.cinder-backup.keyring"
+        mode: '0600'
+        remote_src: yes
+
+    - name: "nova 디렉토리 생성"
+      file:
+        path: "{{ kolla_config_base }}/nova"
+        state: directory
+        mode: '0755'
+
+    - name: "nova - ceph.conf 복사"
+      copy:
+        src: /etc/ceph/ceph.conf
+        dest: "{{ kolla_config_base }}/nova/ceph.conf"
+        remote_src: yes
+
+    - name: "nova - cinder keyring 복사 (nova는 cinder 키링 공유)"
+      copy:
+        src: /etc/ceph/ceph.client.cinder.keyring
+        dest: "{{ kolla_config_base }}/nova/ceph.client.cinder.keyring"
+        mode: '0600'
+        remote_src: yes
+
+    - name: "manila 디렉토리 생성"
+      file:
+        path: "{{ kolla_config_base }}/manila"
+        state: directory
+        mode: '0755'
+
+    - name: "manila - ceph.conf 복사"
+      copy:
+        src: /etc/ceph/ceph.conf
+        dest: "{{ kolla_config_base }}/manila/ceph.conf"
+        remote_src: yes
+
+    - name: "manila - keyring 복사"
+      copy:
+        src: /etc/ceph/ceph.client.manila.keyring
+        dest: "{{ kolla_config_base }}/manila/ceph.client.manila.keyring"
+        mode: '0600'
+        remote_src: yes
+
+    - name: "복사된 ceph.conf 들여쓰기 제거"
+      shell: find {{ kolla_config_base }} -name "ceph.conf" -exec sed -i 's/^[[:space:]]*//' {} \;
+
+    - name: "Kolla config 구조 확인"
+      shell: find {{ kolla_config_base }} -name "ceph.*" | sort
+      register: kolla_structure
+
+    - name: "구조 출력"
+      debug:
+        msg: "{{ kolla_structure.stdout_lines }}"
+
+    - name: "키링 권한 확인"
+      shell: find {{ kolla_config_base }} -name "*.keyring" -exec ls -la {} \;
+      register: keyring_perms
+
+    - name: "권한 출력"
+      debug:
+        msg: "{{ keyring_perms.stdout_lines }}"
+
+    - name: "최종 kolla config 구조 확인"
+      shell: find {{ kolla_config_base }} -type f | sort
+      register: final_structure
+
+    - name: "최종 구조 출력"
+      debug:
+        msg: "{{ final_structure.stdout_lines }}"

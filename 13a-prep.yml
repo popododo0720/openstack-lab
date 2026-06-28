@@ -1,0 +1,158 @@
+
+---
+# Kolla-Ansible 배포 준비 (bootstrap + pull)
+# Ceph는 Podman으로 동작하므로 Docker 재시작 영향 없음
+
+- name: "글로벌 DNS 설정 (br-ex 전환 시 DNS 단절 방지)"
+  hosts: stack1,stack2,stack3
+  become: yes
+  any_errors_fatal: true
+
+  tasks:
+    - name: "systemd-resolved 글로벌 DNS 설정"
+      lineinfile:
+        path: /etc/systemd/resolved.conf
+        regexp: '^#?DNS='
+        line: 'DNS={{ site_dns_servers }}'
+        state: present
+
+    - name: "systemd-resolved 재시작"
+      service:
+        name: systemd-resolved
+        state: restarted
+
+- name: "Kolla 배포 준비 (패스워드/인증서/부트스트랩)"
+  hosts: stack1
+  become: yes
+  any_errors_fatal: true
+  vars:
+    venv_path: "/root/kolla-venv"
+    multinode_path: "/root/multinode"
+
+  tasks:
+    - name: "빈 패스워드 확인"
+      shell: grep -cE '^[a-z_]+:$' /etc/kolla/passwords.yml
+      register: empty_pw_count
+      changed_when: false
+      failed_when: false
+
+    - name: "패스워드 생성 필요시 실행"
+      shell: |
+        set -euo pipefail
+        source {{ venv_path }}/bin/activate
+        cd /root/kolla-ansible/tools
+        ./generate_passwords.py
+      args:
+        executable: /bin/bash
+      when: empty_pw_count.stdout | int > 0
+
+    - name: "admin 패스워드 설정"
+      lineinfile:
+        path: /etc/kolla/passwords.yml
+        regexp: '^keystone_admin_password:'
+        line: "keystone_admin_password: {{ admin_password }}"
+
+    - name: "기존 octavia 인증서 디렉토리 삭제"
+      file:
+        path: /etc/kolla/octavia-certificates
+        state: absent
+
+    - name: "TLS 인증서 생성"
+      shell: |
+        set -euo pipefail
+        source {{ venv_path }}/bin/activate
+        kolla-ansible certificates -i {{ multinode_path }}
+      args:
+        executable: /bin/bash
+      register: cert_result
+
+    - name: "인증서 생성 결과"
+      debug:
+        msg: "{{ cert_result.stdout_lines[-10:] }}"
+
+    - name: "Octavia 인증서 생성"
+      shell: |
+        set -euo pipefail
+        source {{ venv_path }}/bin/activate
+        kolla-ansible octavia-certificates -i {{ multinode_path }}
+      args:
+        executable: /bin/bash
+      register: octavia_cert_result
+
+    - name: "Octavia 인증서 결과"
+      debug:
+        msg: "{{ octavia_cert_result.stdout_lines[-10:] }}"
+
+    - name: "서버 부트스트랩"
+      shell: |
+        set -euo pipefail
+        source {{ venv_path }}/bin/activate
+        kolla-ansible bootstrap-servers -i {{ multinode_path }}
+      args:
+        executable: /bin/bash
+      register: bootstrap_result
+
+    - name: "부트스트랩 결과"
+      debug:
+        msg: "{{ bootstrap_result.stdout_lines[-10:] }}"
+
+- name: "Ceph 상태 확인"
+  hosts: stack1
+  become: yes
+  any_errors_fatal: true
+
+  tasks:
+    - name: "Ceph 클러스터 상태 확인"
+      shell: timeout 120 ceph -s
+      failed_when: false
+      register: ceph_status
+      retries: 5
+      delay: 10
+      until: "'HEALTH_OK' in ceph_status.stdout or 'HEALTH_WARN' in ceph_status.stdout"
+
+    - name: "Ceph 상태 출력"
+      debug:
+        msg: "{{ ceph_status.stdout_lines }}"
+
+    - name: "Ceph HEALTH 확인"
+      assert:
+        that:
+          - "'HEALTH_OK' in ceph_status.stdout or 'HEALTH_WARN' in ceph_status.stdout"
+        fail_msg: "Ceph 클러스터가 비정상입니다. 수동 확인 필요."
+
+- name: "Kolla 이미지 다운로드 (pull)"
+  hosts: stack1
+  become: yes
+  any_errors_fatal: true
+  vars:
+    venv_path: "/root/kolla-venv"
+    multinode_path: "/root/multinode"
+
+  tasks:
+    - name: "컨테이너 이미지 사전 다운로드"
+      shell: |
+        set -euo pipefail
+        source {{ venv_path }}/bin/activate
+        kolla-ansible pull -i {{ multinode_path }}
+      args:
+        executable: /bin/bash
+      register: pull_result
+
+    - name: "이미지 다운로드 결과"
+      debug:
+        msg: "{{ pull_result.stdout_lines[-10:] }}"
+
+- name: "배포 준비 완료"
+  hosts: stack1
+  become: yes
+  any_errors_fatal: true
+
+  tasks:
+    - name: "완료 메시지"
+      debug:
+        msg:
+          - "배포 준비 완료!"
+          - "다음 단계:"
+          - "  ansible-playbook -i inventory.ini 13b-prechecks.yml"
+          - "  ansible-playbook -i inventory.ini 13c-deploy.yml"
+          - "  ansible-playbook -i inventory.ini 13d-post-deploy.yml"

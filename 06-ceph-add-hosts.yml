@@ -1,0 +1,73 @@
+---
+# Ceph 클러스터에 호스트 추가 및 cephadm SSH 키 배포
+- name: "cephadm SSH 키 가져오기"
+  hosts: stack1
+  become: yes
+  tasks:
+    - name: "cephadm 공개키 가져오기"
+      command: cephadm shell -- ceph cephadm get-pub-key
+      register: cephadm_pub_cmd
+
+    - name: "cephadm 공개키 저장"
+      set_fact:
+        cephadm_pubkey: "{{ cephadm_pub_cmd.stdout | trim }}"
+
+- name: "stack2, stack3에 cephadm 키 등록"
+  hosts: stack2,stack3
+  become: yes
+  tasks:
+    - name: "cephadm 공개키 등록"
+      lineinfile:
+        path: /root/.ssh/authorized_keys
+        line: "{{ hostvars['stack1']['cephadm_pubkey'] }}"
+        create: yes
+        mode: '0600'
+
+- name: "Ceph 클러스터에 호스트 추가"
+  hosts: stack1
+  become: yes
+  vars:
+    target_hosts:
+      - stack2
+      - stack3
+  tasks:
+    - name: "호스트 추가"
+      command: cephadm shell -- ceph orch host add {{ item }} {{ hostvars[item]['storage_ip'] }}
+      loop: "{{ target_hosts }}"
+      register: add_host_result
+      failed_when: false
+
+    - name: "추가 결과 출력"
+      debug:
+        msg: "{{ item.item }}: {{ item.stdout | default(item.stderr) }}"
+      loop: "{{ add_host_result.results }}"
+
+    - name: "호스트 목록 확인 (30초 대기)"
+      pause:
+        seconds: 30
+
+    - name: "호스트 목록 확인"
+      command: cephadm shell -- ceph orch host ls
+      register: host_list
+
+    - name: "호스트 목록 출력"
+      debug:
+        msg: "{{ host_list.stdout_lines }}"
+
+- name: "_admin 라벨 추가 (HA 관리)"
+  hosts: stack1
+  become: yes
+  tasks:
+    - name: "stack2에 _admin 라벨 추가"
+      command: cephadm shell -- ceph orch host label add stack2 _admin
+
+    - name: "stack3에 _admin 라벨 추가"
+      command: cephadm shell -- ceph orch host label add stack3 _admin
+
+    - name: "라벨 확인"
+      command: cephadm shell -- ceph orch host ls
+      register: host_labels
+
+    - name: "호스트 라벨 출력"
+      debug:
+        msg: "{{ host_labels.stdout_lines }}"

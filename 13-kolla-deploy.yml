@@ -1,0 +1,8 @@
+---
+# Kolla 배포 통합 실행
+# 13a 준비 -> 13b prechecks -> 13c deploy -> 13d post-deploy
+
+- import_playbook: 13a-prep.yml
+- import_playbook: 13b-prechecks.yml
+- import_playbook: 13c-deploy.yml
+- import_playbook: 13d-post-deploy.yml

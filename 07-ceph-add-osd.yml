@@ -1,0 +1,47 @@
+---
+# OSD 추가 (사용 가능한 모든 디스크 자동 적용)
+- name: "OSD 추가"
+  hosts: stack1
+  become: yes
+  tasks:
+    - name: "사용 가능한 디바이스 확인"
+      command: cephadm shell -- ceph orch device ls --refresh
+      register: device_list
+
+    - name: "디바이스 목록 출력"
+      debug:
+        msg: "{{ device_list.stdout_lines }}"
+
+    - name: "OSD 적용 inventory 지정 디스크만"
+      command: >
+        cephadm shell -- ceph orch daemon add osd
+        {{ item }}:{{ hostvars[item]['osd_devices'] }}
+      loop:
+        - stack1
+        - stack2
+        - stack3
+      register: osd_apply
+
+    - name: "OSD 적용 결과"
+      debug:
+        msg: "{{ osd_apply.results | map(attribute='stdout') | list }}"
+
+    - name: "OSD 생성 대기 (60초)"
+      pause:
+        seconds: 60
+
+    - name: "OSD 상태 확인"
+      command: cephadm shell -- ceph osd tree
+      register: osd_tree
+
+    - name: "OSD 트리 출력"
+      debug:
+        msg: "{{ osd_tree.stdout_lines }}"
+
+    - name: "Ceph 클러스터 상태"
+      command: ceph -s
+      register: ceph_status
+
+    - name: "상태 출력"
+      debug:
+        msg: "{{ ceph_status.stdout_lines }}"

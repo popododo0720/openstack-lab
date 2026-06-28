@@ -1,0 +1,42 @@
+---
+- name: "Ceph 부트스트랩 (stack1만, Podman)"
+  hosts: stack1
+  become: yes
+
+  vars:
+    osd_memory_target: 4294967296  # 4GB per OSD
+
+  tasks:
+    - name: "Ceph 부트스트랩"
+      shell: |
+        cephadm --image {{ local_registry }}/fxhci/ceph:v19 bootstrap \
+          --mon-ip {{ storage_ip }} \
+          --cluster-network {{ storage_network }} \
+          --allow-fqdn-hostname \
+          --skip-firewalld \
+          --skip-monitoring-stack
+      args:
+        creates: /etc/ceph/ceph.conf
+      timeout: 600
+
+    - name: "OSD 메모리 autotune 비활성화"
+      command: ceph config set osd osd_memory_target_autotune false
+
+    - name: "OSD 메모리 타겟 고정 (8GB)"
+      command: ceph config set osd osd_memory_target {{ osd_memory_target }}
+
+    - name: "OSD 메모리 설정 확인"
+      command: ceph config get osd osd_memory_target
+      register: osd_mem_check
+
+    - name: "설정 확인 출력"
+      debug:
+        msg: "osd_memory_target = {{ osd_mem_check.stdout }} (autotune disabled)"
+
+    - name: "Ceph 상태 확인"
+      command: ceph -s
+      register: ceph_status
+
+    - name: "상태 출력"
+      debug:
+        msg: "{{ ceph_status.stdout_lines }}"

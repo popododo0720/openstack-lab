@@ -1,0 +1,12 @@
+*.qcow2
+*.raw
+*.img
+*.tar
+*.tar.gz
+**/.terraform/
+**/terraform.tfstate*
+**/__pycache__/
+*.bak
+*.pem
+*.key
+skyline-static-*/

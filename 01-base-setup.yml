@@ -1,0 +1,120 @@
+---
+- name: "기본 패키지 설치"
+  hosts: all
+  become: yes
+
+  tasks:
+    - name: "시스템 시간대 현재값 확인"
+      command: timedatectl show -p Timezone --value
+      register: current_tz
+      changed_when: false
+
+    - name: "시스템 시간대 Asia/Seoul 설정"
+      command: timedatectl set-timezone Asia/Seoul
+      when: current_tz.stdout != "Asia/Seoul"
+
+    - name: "로컬 터널 HTTPS APT 인증서 검사 비활성화"
+      copy:
+        dest: /etc/apt/apt.conf.d/99-local-tunnel-https
+        mode: 0644
+        content: |
+          Acquire::https::localhost::Verify-Peer "false";
+          Acquire::https::localhost::Verify-Host "false";
+          Acquire::https::127.0.0.1::Verify-Peer "false";
+          Acquire::https::127.0.0.1::Verify-Host "false";
+      when:
+        - repo_base_url is defined
+        - repo_base_url | regex_search("^https://(localhost|127\\.0\\.0\\.1)(:|/)")
+
+    - name: "Ubuntu APT 소스를 로컬 repo_base_url로 설정"
+      copy:
+        dest: /etc/apt/sources.list.d/local-ubuntu.sources
+        mode: 0644
+        content: |
+          Types: deb
+          URIs: {{ repo_base_url }}/aptly
+          Suites: noble noble-updates noble-security
+          Components: main
+          Trusted: yes
+      when:
+        - repo_base_url is defined
+        - repo_base_url | length > 0
+
+    - name: "기본 Ubuntu APT 소스 비활성화"
+      file:
+        path: /etc/apt/sources.list.d/ubuntu.sources
+        state: absent
+      when:
+        - repo_base_url is defined
+        - repo_base_url | length > 0
+
+    - name: "apt 캐시 업데이트"
+      apt:
+        update_cache: yes
+
+    - name: "기본 패키지 설치"
+      apt:
+        name:
+          - chrony
+          - net-tools
+          - curl
+          - wget
+          - ripgrep
+          - fzf
+          - bat
+          - zoxide
+          - python3-full
+          - python3-pip
+          - ca-certificates
+          - gnupg
+          - lsb-release
+          - isc-dhcp-client
+          - apt-transport-https
+          - nfs-common
+        state: present
+
+    - name: "zoxide 전역 bash 초기화 설정"
+      copy:
+        dest: /etc/profile.d/zoxide.sh
+        mode: '0644'
+        content: |
+          if command -v zoxide >/dev/null 2>&1; then
+            eval "$(zoxide init bash)"
+          fi
+
+    - name: 기본 Ubuntu NTP pool 비활성화
+      lineinfile:
+        path: /etc/chrony/chrony.conf
+        regexp: '^pool\s+.*$'
+        state: absent
+
+    - name: 사이트 NTP 소스 파일 배포
+      copy:
+        dest: /etc/chrony/sources.d/site-ntp.sources
+        mode: '0644'
+        content: |-
+          {% for server in site_ntp_servers.split() %}
+          server {{ server }} iburst prefer
+          {% endfor %}
+
+    - name: Chrony 재시작
+      service:
+        name: chrony
+        state: restarted
+        enabled: yes
+
+    - name: 시간 즉시 보정
+      shell: chronyc -a makestep || true
+      changed_when: false
+
+    - name: "로케일 생성 (ko_KR, en_US)"
+      shell: locale-gen ko_KR.UTF-8 en_US.UTF-8
+      changed_when: false
+
+    - name: "기본 로케일 설정"
+      copy:
+        content: |
+          LANG=en_US.UTF-8
+          LC_ALL=en_US.UTF-8
+        dest: /etc/default/locale
+        mode: 0644

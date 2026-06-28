@@ -1,0 +1,284 @@
+---
+- name: "Kolla 사후 설정 (post-deploy)"
+  hosts: stack1
+  become: yes
+  any_errors_fatal: true
+  vars:
+    venv_path: "/root/kolla-venv"
+    multinode_path: "/root/multinode"
+
+  tasks:
+    - name: "kolla-ansible post-deploy 실행"
+      shell: |
+        set -euo pipefail
+        source {{ venv_path }}/bin/activate
+        kolla-ansible post-deploy -i {{ multinode_path }}
+      args:
+        executable: /bin/bash
+      register: postdeploy_result
+
+    - name: "post-deploy 결과"
+      debug:
+        msg: "{{ postdeploy_result.stdout_lines[-10:] }}"
+
+- name: "OpenStack CLI 설치 (3대)"
+  hosts: stack1,stack2,stack3
+  become: yes
+  any_errors_fatal: true
+  vars:
+    venv_path: "/root/kolla-venv"
+
+  tasks:
+    - name: "/root/scripts 디렉토리 생성 (stack1)"
+      file:
+        path: /root/scripts
+        state: directory
+        mode: '0755'
+      delegate_to: stack1
+      run_once: true
+
+    - name: "운영 스크립트 배포 (stack1)"
+      copy:
+        src: "{{ playbook_dir }}/scripts/"
+        dest: /root/scripts/
+        owner: root
+        group: root
+        mode: preserve
+        directory_mode: '0755'
+      delegate_to: stack1
+      run_once: true
+
+    - name: "python wheelhouse 존재 확인"
+      stat:
+        path: /root/python-wheels/constraints-2025.1.txt
+      register: python_wheels_check
+
+    - name: "stack1 wheelhouse 아카이브 생성"
+      archive:
+        path: /root/python-wheels
+        dest: /root/python-wheels.tar.gz
+        format: gz
+      delegate_to: stack1
+      run_once: true
+
+    - name: "stack1 wheelhouse 아카이브 읽기"
+      slurp:
+        src: /root/python-wheels.tar.gz
+      delegate_to: stack1
+      run_once: true
+      register: python_wheels_archive
+
+    - name: "누락 노드에 wheelhouse 아카이브 배포"
+      copy:
+        content: "{{ python_wheels_archive.content | b64decode }}"
+        dest: /root/python-wheels.tar.gz
+        mode: '0644'
+      when:
+        - inventory_hostname != 'stack1'
+        - not python_wheels_check.stat.exists
+
+    - name: "누락 노드 기존 wheelhouse 정리"
+      file:
+        path: /root/python-wheels
+        state: absent
+      when:
+        - inventory_hostname != 'stack1'
+        - not python_wheels_check.stat.exists
+
+    - name: "누락 노드에 wheelhouse 압축 해제"
+      unarchive:
+        src: /root/python-wheels.tar.gz
+        dest: /root/
+        remote_src: true
+      when:
+        - inventory_hostname != 'stack1'
+        - not python_wheels_check.stat.exists
+
+    - name: "누락 노드 wheelhouse 아카이브 정리"
+      file:
+        path: /root/python-wheels.tar.gz
+        state: absent
+      when:
+        - inventory_hostname != 'stack1'
+        - not python_wheels_check.stat.exists
+
+    - name: "kolla venv 존재 확인"
+      stat:
+        path: "{{ venv_path }}/bin/activate"
+      register: venv_check
+
+    - name: "kolla venv 생성 (없는 경우)"
+      command: python3 -m venv {{ venv_path }}
+      when: not venv_check.stat.exists
+
+    - name: "openstackclient 설치"
+      shell: |
+        set -euo pipefail
+        source {{ venv_path }}/bin/activate
+        pip install --no-index --find-links /root/python-wheels \
+          -c /root/python-wheels/constraints-2025.1.txt \
+          "python-openstackclient==7.5.0" \
+          "python-octaviaclient==3.10.0"
+      args:
+        executable: /bin/bash
+      register: osc_install
+
+    - name: "설치 확인"
+      shell: |
+        set -euo pipefail
+        source {{ venv_path }}/bin/activate
+        openstack --version
+      args:
+        executable: /bin/bash
+      register: osc_version
+
+    - name: "버전 출력"
+      debug:
+        msg: "{{ osc_version.stdout }}"
+
+    - name: "stack1의 admin-openrc.sh 읽기"
+      slurp:
+        src: /etc/kolla/admin-openrc.sh
+      delegate_to: stack1
+      run_once: true
+      register: admin_openrc_raw
+
+    - name: "stack1의 Kolla CA root 인증서 읽기"
+      slurp:
+        src: /etc/kolla/certificates/ca/root.crt
+      delegate_to: stack1
+      run_once: true
+      register: kolla_ca_root_raw
+
+    - name: "admin-openrc.sh 배포 (3대)"
+      copy:
+        content: "{{ admin_openrc_raw.content | b64decode }}"
+        dest: /etc/kolla/admin-openrc.sh
+        mode: '0600'
+
+    - name: "Kolla 인증서 디렉토리 생성"
+      file:
+        path: /etc/kolla/certificates/ca
+        state: directory
+        mode: '0755'
+
+    - name: "Kolla CA root 인증서 배포 (3대)"
+      copy:
+        content: "{{ kolla_ca_root_raw.content | b64decode }}"
+        dest: /etc/kolla/certificates/ca/root.crt
+        mode: '0640'
+
+    - name: "activate-openstack 스크립트 생성"
+      copy:
+        dest: /root/activate-openstack
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          source /root/kolla-venv/bin/activate
+          source /etc/kolla/admin-openrc.sh
+          echo "OpenStack CLI 활성화됨"
+
+    - name: "완료 메시지"
+      debug:
+        msg:
+          - "OpenStack CLI 설치 완료!"
+          - "사용법: source /root/activate-openstack"
+
+
+- name: "Post-deploy 보정: Ceph Prometheus Exporter 보장"
+  hosts: stack1
+  become: yes
+  any_errors_fatal: true
+
+  tasks:
+    - name: "Ceph mgr prometheus 모듈 활성화"
+      shell: ceph mgr module enable prometheus
+      register: ceph_prom_module
+      changed_when: "'already enabled' not in (ceph_prom_module.stdout + ceph_prom_module.stderr) | lower"
+
+    - name: "Ceph prometheus listener 주소 설정"
+      shell: ceph config set mgr mgr/prometheus/server_addr 0.0.0.0
+
+    - name: "Ceph prometheus listener 포트 설정"
+      shell: ceph config set mgr mgr/prometheus/server_port 9283
+
+    - name: "Ceph mgr exporter endpoint 확인"
+      uri:
+        url: "http://127.0.0.1:9283/metrics"
+        method: GET
+        status_code: 200
+        return_content: false
+        timeout: 5
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['all'] }}"
+      register: ceph_prometheus_check
+      retries: 20
+      delay: 3
+      until: ceph_prometheus_check.status == 200
+
+- name: "Post-deploy 검증: Galera Primary 상태 확인"
+  hosts: stack1
+  become: yes
+  any_errors_fatal: true
+
+  tasks:
+    - name: "DB 루트 비밀번호 로드"
+      slurp:
+        src: /etc/kolla/passwords.yml
+      register: kolla_pw_raw
+
+    - name: "DB 루트 비밀번호 파싱"
+      set_fact:
+        db_root_pw: >-
+          {{
+            ((kolla_pw_raw.content | b64decode | from_yaml).mariadb_root_password
+             | default((kolla_pw_raw.content | b64decode | from_yaml).database_password
+             | default('')))
+          }}
+
+    - name: "Galera wsrep_cluster_status 확인"
+      shell: >-
+        docker exec mariadb mysql --no-defaults --protocol=socket --socket=/run/mysqld/mysqld.sock
+        -uroot -p'{{ db_root_pw }}' -Nse "SHOW STATUS LIKE 'wsrep_cluster_status';"
+      register: wsrep_cluster_status
+      changed_when: false
+
+    - name: "Galera wsrep_ready 확인"
+      shell: >-
+        docker exec mariadb mysql --no-defaults --protocol=socket --socket=/run/mysqld/mysqld.sock
+        -uroot -p'{{ db_root_pw }}' -Nse "SHOW STATUS LIKE 'wsrep_ready';"
+      register: wsrep_ready
+      changed_when: false
+
+    - name: "Galera wsrep_local_state_comment 확인"
+      shell: >-
+        docker exec mariadb mysql --no-defaults --protocol=socket --socket=/run/mysqld/mysqld.sock
+        -uroot -p'{{ db_root_pw }}' -Nse "SHOW STATUS LIKE 'wsrep_local_state_comment';"
+      register: wsrep_state_comment
+      changed_when: false
+
+    - name: "Galera wsrep_cluster_size 확인"
+      shell: >-
+        docker exec mariadb mysql --no-defaults --protocol=socket --socket=/run/mysqld/mysqld.sock
+        -uroot -p'{{ db_root_pw }}' -Nse "SHOW STATUS LIKE 'wsrep_cluster_size';"
+      register: wsrep_cluster_size
+      changed_when: false
+
+    - name: "Galera Primary/Synced 게이트"
+      assert:
+        that:
+          - "'Primary' in wsrep_cluster_status.stdout"
+          - "'ON' in wsrep_ready.stdout"
+          - "'Synced' in wsrep_state_comment.stdout"
+          - "'3' in wsrep_cluster_size.stdout"
+        fail_msg: >-
+          Galera 상태 비정상: {{ wsrep_cluster_status.stdout }} / {{ wsrep_ready.stdout }} /
+          {{ wsrep_state_comment.stdout }} / {{ wsrep_cluster_size.stdout }}
+
+    - name: "Galera 상태 출력"
+      debug:
+        msg:
+          - "{{ wsrep_cluster_status.stdout }}"
+          - "{{ wsrep_ready.stdout }}"
+          - "{{ wsrep_state_comment.stdout }}"
+          - "{{ wsrep_cluster_size.stdout }}"

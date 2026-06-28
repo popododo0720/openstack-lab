@@ -1,0 +1,133 @@
+---
+- name: "Docker CE 설치 + Kolla 사전 설정"
+  hosts: all
+  become: yes
+
+  tasks:
+    # ── Docker 설치 ──
+    - name: "기존 docker.io 제거 (충돌 방지)"
+      apt:
+        name:
+          - docker.io
+          - docker-compose
+          - containerd
+        state: absent
+        purge: yes
+      ignore_errors: yes
+
+    - name: "Docker 공식 APT 레포 추가"
+      copy:
+        dest: /etc/apt/sources.list.d/docker.sources
+        content: |
+          Types: deb
+          URIs: {{ repo_base_url | default("https://" ~ local_registry.split(":")[0]) }}/aptly
+          Suites: docker-noble
+          Components: stable
+          Trusted: yes
+        mode: '0644'
+
+    - name: "Docker APT 레포 인덱스 강제 갱신"
+      command: apt-get update
+      changed_when: false
+
+    - name: "Docker 마스크 (설치 직후 자동시작 방지)"
+      file:
+        src: /dev/null
+        dest: /etc/systemd/system/docker.service
+        owner: root
+        group: root
+        state: link
+      when: ansible_facts.os_family == 'Debian'
+
+    - name: "Docker CE 패키지 설치"
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+          - python3-docker
+          - apparmor
+        state: present
+
+    # ── Kolla-Ansible과 동일한 Docker 설정 (bootstrap 재시작 방지) ──
+    - name: "Docker 마스크 해제"
+      file:
+        path: /etc/systemd/system/docker.service
+        state: absent
+      notify: Reload systemd
+
+    - name: "/etc/docker 디렉토리 생성"
+      file:
+        path: /etc/docker
+        state: directory
+        mode: '0755'
+
+    - name: "daemon.json 설정 (kolla-ansible baremetal 롤과 동일)"
+      copy:
+        content: |
+          {
+              "bridge": "none",
+              "iptables": false,
+              "ip-forward": false,
+              "insecure-registries": ["{{ local_registry }}"],
+              "log-opts": {
+                  "max-file": "5",
+                  "max-size": "50m"
+              }
+          }
+        dest: /etc/docker/daemon.json
+        mode: '0644'
+
+    - name: "Docker systemd override 디렉토리 생성"
+      file:
+        path: /etc/systemd/system/docker.service.d
+        state: directory
+        recurse: yes
+
+    - name: "Docker systemd override"
+      copy:
+        content: |
+          [Service]
+          ExecStart=
+          ExecStart=/usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+        dest: /etc/systemd/system/docker.service.d/kolla.conf
+        mode: '0644'
+
+    - name: "systemd 리로드"
+      systemd:
+        daemon_reload: yes
+
+    - name: "containerd 재시작"
+      systemd:
+        name: containerd
+        state: restarted
+        enabled: yes
+
+    - name: "Docker 서비스 시작 및 활성화"
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: "Docker 동작 확인"
+      command: docker --version
+      register: docker_ver
+
+    - name: "Docker 버전 출력"
+      debug:
+        msg: "{{ docker_ver.stdout }}"
+
+    - name: "daemon.json 확인"
+      command: cat /etc/docker/daemon.json
+      register: daemon_check
+      changed_when: false
+
+    - name: "설정 출력"
+      debug:
+        msg: "{{ daemon_check.stdout }}"
+
+  handlers:
+    - name: Reload systemd
+      systemd:
+        daemon_reload: yes
