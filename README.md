@@ -1,6 +1,7 @@
 # openstack-lab
 
 Kolla-Ansible OpenStack + Ceph HCI deployment automation (lab/reference).
+
 Based on the deployment playbooks used in production VMware → OpenStack migration.
 
 ## Structure
