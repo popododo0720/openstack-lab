@@ -1033,3 +1033,19 @@
         src: "{{ playbook_dir }}/config/masakari/kolla_masakari_monitors_sudoers"
         dest: /etc/kolla/config/masakari/kolla_masakari_monitors_sudoers
         mode: "0644"
+
+- name: "Nova custom config 배포 (live-migration convergence + config drive)"
+  hosts: stack1
+  become: yes
+  tasks:
+    - name: "Nova config 디렉토리 생성"
+      file:
+        path: /etc/kolla/config/nova
+        state: directory
+        mode: "0755"
+
+    - name: "nova-compute.conf override 배포 (auto_converge/post_copy/timeout_action/force_config_drive)"
+      copy:
+        src: "{{ playbook_dir }}/config/nova/nova-compute.conf"
+        dest: /etc/kolla/config/nova/nova-compute.conf
+        mode: "0644"
