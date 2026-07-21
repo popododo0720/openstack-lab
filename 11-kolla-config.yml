@@ -805,11 +805,11 @@
       args:
         executable: /bin/bash
 
-    - name: "admin 비밀번호 고정 (CHANGEME_PASSWORD)"
+    - name: "admin 비밀번호 고정 (coremax1@#)"
       lineinfile:
         path: /etc/kolla/passwords.yml
         regexp: '^keystone_admin_password:'
-        line: 'keystone_admin_password: CHANGEME_PASSWORD'
+        line: 'keystone_admin_password: coremax1@#'
 
 
     - name: "OpenStack Exporter 커스텀 설정 디렉토리 생성"
@@ -879,6 +879,29 @@
     - name: "Grafana 커스텀 대시보드 목록 출력"
       debug:
         msg: "{{ grafana_dashboard_files.files | map(attribute='path') | list }}"
+
+    - name: "Grafana provisioning 설정 컨피그 추가"
+      copy:
+        src: "{{ playbook_dir }}/config/grafana/provisioning.yaml"
+        dest: /etc/kolla/config/grafana/provisioning.yaml
+        mode: "0644"  
+
+    - name: "initialize prometheus directory"
+      file:
+        path: /etc/kolla/config/prometheus/prometheus.yml.d/
+        state: absent
+
+    - name: "Grafana 커스텀 대시보드 디렉토리 생성"
+      file:
+        path: /etc/kolla/config/prometheus/prometheus.yml.d/
+        state: directory
+        mode: "0755"
+
+    - name: "Prometheus rabbitmq scraper"
+      copy:
+        src: "{{ playbook_dir }}/config/prometheus/"
+        dest: /etc/kolla/config/ 
+        mode: "0644"  
 
     - name: "Skyline nginx custom override 디렉토리 생성"
       file:
@@ -1032,20 +1055,4 @@
       copy:
         src: "{{ playbook_dir }}/config/masakari/kolla_masakari_monitors_sudoers"
         dest: /etc/kolla/config/masakari/kolla_masakari_monitors_sudoers
-        mode: "0644"
-
-- name: "Nova custom config 배포 (live-migration convergence + config drive)"
-  hosts: stack1
-  become: yes
-  tasks:
-    - name: "Nova config 디렉토리 생성"
-      file:
-        path: /etc/kolla/config/nova
-        state: directory
-        mode: "0755"
-
-    - name: "nova-compute.conf override 배포 (auto_converge/post_copy/timeout_action/force_config_drive)"
-      copy:
-        src: "{{ playbook_dir }}/config/nova/nova-compute.conf"
-        dest: /etc/kolla/config/nova/nova-compute.conf
         mode: "0644"

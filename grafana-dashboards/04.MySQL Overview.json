@@ -4353,6 +4353,16 @@
         "type": "interval"
       },
       {
+     	"name": "DS_PROMETHEUS",
+     	"label": "Prometheus",
+     	"type": "datasource",
+     	"query": "prometheus",
+     	"hide": 0,
+     	"refresh": 1,
+     	"options": [],
+     	"current": {}
+      },
+      {
         "allFormat": "glob",
         "current": {},
         "datasource": {

@@ -1,0 +1,15 @@
+# FXHCI override: live-migration convergence for busy VMs.
+# Kolla default leaves auto-converge/post-copy OFF, so VMs with a high memory
+# dirty-rate (win10 desktops, license servers) never converge during pre-copy
+# and abort at live_migration_completion_timeout. This stalls the per-node queue
+# (max_concurrent_live_migrations=1) and leaves orphaned 'running' migration rows.
+#   auto_converge   => throttle vCPU to slow dirtying (1st line)
+#   post_copy       => switch to dest-pull of remaining pages (guarantees convergence)
+#   timeout_action  => on completion timeout, force post-copy instead of plain abort
+# Applied only to nova-compute via node_custom_config (config/nova/nova-compute.conf).
+[libvirt]
+live_migration_permit_auto_converge = true
+live_migration_permit_post_copy = true
+
+[DEFAULT]
+live_migration_timeout_action = force_complete

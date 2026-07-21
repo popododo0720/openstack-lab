@@ -1,0 +1,14 @@
+scrape_configs:
+  - job_name: rabbitmq-detailed
+    scrape_interval: 30s
+       scrape_timeout: 10s
+       metrics_path: /metrics/detailed
+       params:
+         family:
+           - queue_coarse_metrics
+           - queue_consumer_count
+       static_configs:
+         - targets:
+           - 10.0.2.11:15692
+           - 10.0.2.12:15692
+           - 10.0.2.13:15692
