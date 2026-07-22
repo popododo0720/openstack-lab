@@ -282,3 +282,238 @@
           - "{{ wsrep_ready.stdout }}"
           - "{{ wsrep_state_comment.stdout }}"
           - "{{ wsrep_cluster_size.stdout }}"
+
+- name: "OpenSearch Dashboards Saved Objects 자동 복원"
+  hosts: stack1
+  become: yes
+  any_errors_fatal: true
+
+  vars:
+    opensearch_dashboards_url: "https://{{ kolla_internal_vip_address }}:5601"
+    opensearch_dashboards_artifact_src: "{{ playbook_dir }}/config/opensearch-dashboards"
+    opensearch_dashboards_artifact_dest: "/root/opensearch-dashboards"
+    opensearch_saved_objects_file: "fx-hci-opensearch-logs.ndjson"
+    opensearch_saved_objects_path: "{{ opensearch_dashboards_artifact_dest }}/{{ opensearch_saved_objects_file }}"
+    opensearch_dashboard_title: "FX-HCI OpenStack Logs"
+
+  tasks:
+    - name: "Kolla 비밀번호 파일 로드"
+      ansible.builtin.slurp:
+        src: /etc/kolla/passwords.yml
+      register: kolla_passwords_raw
+      no_log: true
+
+    - name: "OpenSearch Dashboards 비밀번호 파싱"
+      ansible.builtin.set_fact:
+        opensearch_dashboards_password: >-
+          {{
+            (kolla_passwords_raw.content | b64decode | from_yaml)
+            .opensearch_dashboards_password
+          }}
+      no_log: true
+
+    - name: "OpenSearch Dashboards Saved Objects 복원"
+      block:
+        - name: "OpenSearch Dashboards artifact 디렉터리 생성"
+          ansible.builtin.file:
+            path: "{{ opensearch_dashboards_artifact_dest }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+
+        - name: "OpenSearch Dashboards artifact 디렉터리 복사"
+          ansible.builtin.copy:
+            src: "{{ opensearch_dashboards_artifact_src }}/"
+            dest: "{{ opensearch_dashboards_artifact_dest }}/"
+            owner: root
+            group: root
+            mode: preserve
+            directory_mode: "0755"
+
+        - name: "Saved Objects NDJSON 로드"
+          ansible.builtin.slurp:
+            src: "{{ opensearch_saved_objects_path }}"
+          register: opensearch_saved_objects_raw
+
+        - name: "Saved Objects NDJSON 줄 파싱"
+          ansible.builtin.set_fact:
+            opensearch_saved_objects_lines: >-
+              {{
+                (opensearch_saved_objects_raw.content | b64decode)
+                .splitlines()
+                | reject('equalto', '')
+                | list
+              }}
+
+        - name: "Saved Objects NDJSON JSON 파싱"
+          ansible.builtin.set_fact:
+            opensearch_saved_objects_records: >-
+              {{ opensearch_saved_objects_lines | map('from_json') | list }}
+
+        - name: "Saved Objects와 export 메타데이터 분리"
+          ansible.builtin.set_fact:
+            opensearch_saved_object_records: >-
+              {{
+                opensearch_saved_objects_records
+                | selectattr('type', 'defined')
+                | list
+              }}
+            opensearch_export_details: >-
+              {{
+                opensearch_saved_objects_records
+                | selectattr('exportedCount', 'defined')
+                | list
+              }}
+            opensearch_exported_dashboards: >-
+              {{
+                opensearch_saved_objects_records
+                | selectattr('type', 'defined')
+                | selectattr('type', 'equalto', 'dashboard')
+                | selectattr('attributes.title', 'equalto', opensearch_dashboard_title)
+                | list
+              }}
+
+        - name: "Saved Objects export 완전성 검증"
+          ansible.builtin.assert:
+            that:
+              - (opensearch_export_details | length) == 1
+              - >-
+                (opensearch_export_details[0].exportedCount | int)
+                == (opensearch_saved_object_records | length)
+              - (opensearch_export_details[0].missingRefCount | int) == 0
+              - >-
+                (opensearch_saved_object_records
+                | selectattr('type', 'equalto', 'dashboard')
+                | list
+                | length) == 1
+              - >-
+                (opensearch_saved_object_records
+                | selectattr('type', 'equalto', 'visualization')
+                | list
+                | length) == 6
+              - >-
+                (opensearch_saved_object_records
+                | selectattr('type', 'equalto', 'search')
+                | list
+                | length) == 2
+              - >-
+                (opensearch_saved_object_records
+                | selectattr('type', 'equalto', 'index-pattern')
+                | list
+                | length) == 1
+              - (opensearch_exported_dashboards | length) == 1
+              - >-
+                (opensearch_exported_dashboards[0].references | length) == 7
+            fail_msg: >-
+              OpenSearch Dashboards NDJSON의 Saved Object 구성이나 참조가
+              예상한 OpenStack 로그 Dashboard bundle과 다릅니다.
+            success_msg: >-
+              OpenSearch Dashboards NDJSON 구성과 참조가 정상입니다.
+
+        - name: "Saved Objects 동적 검증값 설정"
+          ansible.builtin.set_fact:
+            opensearch_saved_objects_expected_count: >-
+              {{ opensearch_saved_object_records | length }}
+            opensearch_dashboard_id: >-
+              {{ opensearch_exported_dashboards[0].id }}
+            opensearch_dashboard_reference_count: >-
+              {{ opensearch_exported_dashboards[0].references | length }}
+
+        - name: "OpenSearch Dashboards API green 상태 대기"
+          ansible.builtin.uri:
+            url: "{{ opensearch_dashboards_url }}/api/status"
+            method: GET
+            user: opensearch
+            password: "{{ opensearch_dashboards_password }}"
+            force_basic_auth: true
+            validate_certs: false
+            use_proxy: false
+            status_code: 200
+            return_content: true
+            headers:
+              securitytenant: global
+          register: opensearch_dashboards_status
+          retries: 60
+          delay: 5
+          until: >-
+            (opensearch_dashboards_status.status | default(0) | int) == 200 and
+            ((opensearch_dashboards_status.json | default({})).get('status', {}).get('overall', {}).get('state', '')) == 'green'
+          changed_when: false
+
+        - name: "Saved Objects import"
+          ansible.builtin.uri:
+            url: "{{ opensearch_dashboards_url }}/api/saved_objects/_import?overwrite=true"
+            method: POST
+            user: opensearch
+            password: "{{ opensearch_dashboards_password }}"
+            force_basic_auth: true
+            validate_certs: false
+            use_proxy: false
+            status_code: 200
+            return_content: true
+            headers:
+              osd-xsrf: "true"
+              securitytenant: global
+            body_format: form-multipart
+            body:
+              file:
+                filename: "{{ opensearch_saved_objects_path }}"
+                mime_type: application/x-ndjson
+          register: opensearch_dashboards_import
+
+        - name: "Saved Objects import 결과 검증"
+          ansible.builtin.assert:
+            that:
+              - opensearch_dashboards_import.json.success | bool
+              - >-
+                (opensearch_dashboards_import.json.successCount | int)
+                == (opensearch_saved_objects_expected_count | int)
+              - >-
+                (opensearch_dashboards_import.json.errors
+                | default([])
+                | length) == 0
+            fail_msg: >-
+              OpenSearch Dashboards Saved Objects import 실패
+              (successCount={{ opensearch_dashboards_import.json.successCount | default(0) }})
+            success_msg: >-
+              OpenSearch Dashboards Saved Objects
+              {{ opensearch_saved_objects_expected_count }}개 import 완료
+
+        - name: "OpenStack 로그 Dashboard 복원 확인"
+          ansible.builtin.uri:
+            url: "{{ opensearch_dashboards_url }}/api/saved_objects/dashboard/{{ opensearch_dashboard_id }}"
+            method: GET
+            user: opensearch
+            password: "{{ opensearch_dashboards_password }}"
+            force_basic_auth: true
+            validate_certs: false
+            use_proxy: false
+            status_code: 200
+            return_content: true
+            headers:
+              osd-xsrf: "true"
+              securitytenant: global
+          register: opensearch_dashboard_check
+          changed_when: false
+
+        - name: "OpenStack 로그 Dashboard 참조 검증"
+          ansible.builtin.assert:
+            that:
+              - opensearch_dashboard_check.json.id == opensearch_dashboard_id
+              - >-
+                opensearch_dashboard_check.json.attributes.title
+                == opensearch_dashboard_title
+              - >-
+                (opensearch_dashboard_check.json.references | length)
+                == (opensearch_dashboard_reference_count | int)
+            fail_msg: >-
+              OpenStack 로그 Dashboard 또는 패널 참조가 올바르지 않습니다.
+            success_msg: >-
+              OpenStack 로그 Dashboard와 패널 참조가 정상입니다.
+
+      always:
+        - name: "OpenSearch Dashboards 임시 artifact 디렉터리 제거"
+          ansible.builtin.file:
+            path: "{{ opensearch_dashboards_artifact_dest }}"
+            state: absent
